@@ -22,6 +22,7 @@ except Exception:  # dill is optional
 
 import watermarking_utils as WMUtils
 from watermarking_method import WatermarkingMethod
+import time
 #from watermarking_utils import METHODS, apply_watermark, read_watermark, explore_pdf, is_watermarking_applicable, get_method
 
 def create_app():
@@ -605,7 +606,7 @@ def create_app():
         dest_dir = file_path.parent / "watermarks"
         dest_dir.mkdir(parents=True, exist_ok=True)
 
-        candidate = f"{base_name}__{intended_slug}.pdf"
+        candidate = f"{base_name}__{intended_slug}_{int(time.time())}.pdf"
         dest_path = dest_dir / candidate
 
         # write bytes
@@ -764,26 +765,42 @@ def create_app():
         if not method or not isinstance(key, str):
             return jsonify({"error": "method, and key are required"}), 400
 
-        # lookup the document; FIXME enforce ownership
+        # lookup the document; FIXME enforce ownership, Done
         try:
             with get_engine().connect() as conn:
-                row = conn.execute(
+                # original document row
+                row_ori = conn.execute(
                     text("""
-                        SELECT id, name, path
-                        FROM Documents
-                        WHERE id = :id
-                    """),
+                                SELECT id, name, path
+                                FROM Documents
+                                WHERE id = :id
+                                LIMIT 1
+                            """),  # LIMIT 1 to make sure nothing else gets returned
                     {"id": doc_id},
+                ).first()
+
+                # NEW: latest watermarked version for this document (if any)
+                row_ver = conn.execute(
+                    text("""
+                                SELECT path
+                                FROM Versions
+                                WHERE documentid = :id 
+                                AND method = :method 
+                                ORDER BY id DESC
+                                LIMIT 1
+                            """),
+                    {"id": doc_id, "method": method},
                 ).first()
         except Exception as e:
             return jsonify({"error": f"database error: {str(e)}"}), 503
 
-        if not row:
+        if not row_ori:
             return jsonify({"error": "document not found"}), 404
 
         # resolve path safely under STORAGE_DIR
         storage_root = Path(app.config["STORAGE_DIR"]).resolve()
-        file_path = Path(row.path)
+        # get the version
+        file_path = Path(row_ver.path) if row_ver else Path(row_ori.path)
         if not file_path.is_absolute():
             file_path = storage_root / file_path
         file_path = file_path.resolve()

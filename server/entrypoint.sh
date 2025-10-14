@@ -66,8 +66,8 @@ else
   fi
 fi
 
-# --- Check RMAP Base PDF (NEW) ---
-BASE_PDF="${RMAP_BASE_PDF:-/app/storage/rmap/group_17_rmap.pdf}"
+# --- Check RMAP Base PDF ---
+BASE_PDF="${RMAP_BASE_PDF:-/app/storage/group_17_rmap.pdf}"
 echo ""
 echo "--- RMAP Base PDF Check ---"
 if [[ -f "$BASE_PDF" ]]; then
@@ -76,7 +76,6 @@ if [[ -f "$BASE_PDF" ]]; then
 else
   echo "⚠️  WARNING: Base PDF not found: $BASE_PDF"
   echo "   RMAP will fail when generating watermarked PDFs"
-  echo "   Create one with: docker-compose exec server bash -c 'python create_base_pdf.py'"
 fi
 
 echo ""

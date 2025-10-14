@@ -20,7 +20,7 @@ RUN pip install --no-cache-dir -e .
 COPY src /app/src
 COPY flag /app/flag
 COPY entrypoint.sh /app/entrypoint.sh
-COPY storage/group_17_rmap.pdf /app/storage/group_17_rmap.pdf
+COPY group_17_rmap.pdf /app/storage/group_17_rmap.pdf
 RUN pip install --no-cache-dir -e .
 
 EXPOSE 5000

@@ -26,7 +26,7 @@ def create_app():
     app = Flask(__name__)
 
     # --- Config ---
-    app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret-change-me")
+    app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "ehmgr17key")
     app.config["STORAGE_DIR"] = Path(os.environ.get("STORAGE_DIR", "./storage")).resolve()
     app.config["TOKEN_TTL_SECONDS"] = int(os.environ.get("TOKEN_TTL_SECONDS", "86400"))
 
@@ -1019,7 +1019,6 @@ def create_app():
             app.logger.exception("rmap-initiate failed: %s", e)
             return jsonify({"error": "server error"}), 500
 
-    # Message 2 -> result
     @app.post("/api/rmap-get-link")
     def rmap_get_link():
         """Handle RMAP Message 2 and create watermarked PDF"""
@@ -1038,15 +1037,20 @@ def create_app():
                 app.logger.warning(f"RMAP get-link: {out.get('error', 'unknown error')}")
                 return jsonify(out), 400
 
-            identity = out.get("identity", "Unknown")
             result_hex = out["result"]
 
-            app.logger.info(f"RMAP get-link: creating link for {identity}")
+            # Get identity from RMAP's internal nonces dictionary
+            identity = "Unknown"
+            if hasattr(rmap, 'nonces') and rmap.nonces:
+                # Get the identity (typically only one active session)
+                identity = list(rmap.nonces.keys())[0]
+                # Clean up the nonce after use
+                rmap.nonces.clear()
 
-            # Create watermarked PDF and Version record
+            app.logger.info(f"RMAP get-link: creating link for {identity} with result {result_hex}")
+
             _rmap_make_link(result_hex, identity)
 
-            # Return just the result (client will use /api/get-version/<result>)
             return jsonify({"result": result_hex}), 200
 
         except Exception as e:

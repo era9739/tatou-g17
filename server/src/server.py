@@ -4,25 +4,22 @@ import hashlib
 import datetime as dt
 from pathlib import Path
 from functools import wraps
-
-from flask import Flask, jsonify, request, g, send_file
+from flask import Flask, jsonify, request, g, send_file, url_for, abort
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
-
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
-
 import pickle as _std_pickle
 try:
     import dill as _pickle  # allows loading classes not importable by module path
 except Exception:  # dill is optional
     _pickle = _std_pickle
-
-
 import watermarking_utils as WMUtils
 from watermarking_method import WatermarkingMethod
 import time
+from rmap.identity_manager import IdentityManager
+from rmap.rmap import RMAP
 #from watermarking_utils import METHODS, apply_watermark, read_watermark, explore_pdf, is_watermarking_applicable, get_method
 
 def create_app():
@@ -826,6 +823,248 @@ def create_app():
             "method": method,
             "position": position
         }), 201
+
+    # ====================== RMAP: setup + endpoints ======================
+
+    # Configuration
+    app.config.setdefault("RMAP_BASE_PDF", os.environ.get("RMAP_BASE_PDF", "/app/storage/group_17_rmap.pdf"))
+    app.config.setdefault("RMAP_LINK_TTL", int(os.environ.get("RMAP_LINK_TTL", "600")))  # 10 minutes
+    app.config.setdefault("RMAP_TOKENS", {})  # token -> {expires, identity, pdf_path}
+
+    # Key paths
+    SERVER_DIR = Path(__file__).resolve().parents[1]
+    DEFAULT_KEYS_DIR = SERVER_DIR / "keys"
+    rmap_keys_dir = Path(os.environ.get("RMAP_KEYS_DIR", str(DEFAULT_KEYS_DIR))).resolve()
+    clients_dir = rmap_keys_dir / "clients"
+    server_pub = rmap_keys_dir / "server_public.asc"
+    server_priv = rmap_keys_dir / "server_private.asc"
+
+    # Initialize RMAP
+    missing = [p for p in (clients_dir, server_pub, server_priv) if not p.exists()]
+    if missing:
+        app.logger.error("RMAP key path(s) missing: %s", ", ".join(map(str, missing)))
+        app.config["RMAP"] = None
+    else:
+        try:
+            im = IdentityManager(
+                client_keys_dir=clients_dir,
+                server_public_key_path=server_pub,
+                server_private_key_path=server_priv,
+            )
+            app.config["RMAP"] = RMAP(im)
+            app.logger.info("RMAP initialized (clients dir: %s)", clients_dir)
+        except Exception as e:
+            app.logger.exception("Failed to initialize RMAP: %s", e)
+            app.config["RMAP"] = None
+
+    def _create_watermarked_pdf(identity: str, result_hex: str) -> Path:
+        """
+        Create a watermarked PDF for the given identity.
+        Returns the path to the watermarked file.
+        """
+        base_pdf = Path(app.config["RMAP_BASE_PDF"])
+        if not base_pdf.exists():
+            raise FileNotFoundError(f"Base PDF not found: {base_pdf}")
+
+        # Watermark storage
+        wm_dir = base_pdf.parent / "watermarks" / "rmap"
+        wm_dir.mkdir(parents=True, exist_ok=True)
+        wm_path = wm_dir / f"rmap_{result_hex}.pdf"
+
+        # Skip if already exists
+        if wm_path.exists():
+            app.logger.info(f"Reusing existing watermark for {identity}")
+            return wm_path
+
+        # Create watermark
+        secret = f"RMAP:{identity}:{result_hex}:{int(time.time())}"
+        key = app.config["SECRET_KEY"]
+        method = "whitespace-stego"  # Use your best method
+
+        app.logger.info(f"Creating watermark for {identity} with method {method}")
+
+        try:
+            wm_bytes = WMUtils.apply_watermark(
+                pdf=str(base_pdf),
+                secret=secret,
+                key=key,
+                method=method,
+                position=None
+            )
+
+            # Save watermarked PDF
+            with wm_path.open("wb") as f:
+                f.write(wm_bytes)
+
+            app.logger.info(f"Watermark created: {wm_path} ({len(wm_bytes)} bytes)")
+
+            # Optional: Store in database for tracking
+            try:
+                with get_engine().begin() as conn:
+                    # Find the base document ID
+                    doc_row = conn.execute(
+                        text("SELECT id FROM Documents WHERE path = :path"),
+                        {"path": str(base_pdf)}
+                    ).first()
+
+                    if doc_row:
+                        conn.execute(
+                            text("""
+                                INSERT INTO Versions 
+                                (documentid, link, intended_for, secret, method, position, path)
+                                VALUES (:documentid, :link, :intended_for, :secret, :method, :position, :path)
+                            """),
+                            {
+                                "documentid": doc_row.id,
+                                "link": result_hex,
+                                "intended_for": identity,
+                                "secret": secret,
+                                "method": method,
+                                "position": "",
+                                "path": str(wm_path)
+                            }
+                        )
+                        app.logger.info(f"Version record created for {identity}")
+            except Exception as e:
+                app.logger.warning(f"Failed to create version record: {e}")
+                # Continue anyway - watermark is already created
+
+            return wm_path
+
+        except Exception as e:
+            app.logger.error(f"Watermarking failed for {identity}: {e}")
+            raise
+
+    def _rmap_make_link(result_hex: str, identity: str) -> dict:
+        """
+        Create watermarked PDF and generate one-time download link.
+        """
+        token = result_hex.lower()
+        expires = int(time.time()) + app.config["RMAP_LINK_TTL"]
+
+        # Create watermarked PDF
+        try:
+            pdf_path = _create_watermarked_pdf(identity, result_hex)
+        except Exception as e:
+            app.logger.error(f"Failed to create watermark: {e}")
+            raise
+
+        # Store token with metadata
+        app.config["RMAP_TOKENS"][token] = {
+            "expires": expires,
+            "identity": identity,
+            "pdf_path": str(pdf_path),
+            "created": int(time.time())
+        }
+
+        return {
+            "link": url_for("rmap_download", token=token, _external=True),
+            "expires": expires,
+        }
+
+    # Message 1 -> Response 1
+    @app.post("/rmap-initiate")
+    def rmap_initiate():
+        """Handle RMAP Message 1"""
+        rmap = app.config.get("RMAP")
+        if rmap is None:
+            return jsonify({"error": "RMAP not initialized"}), 503
+
+        body = request.get_json(silent=True) or {}
+        if "payload" not in body:
+            return jsonify({"error": "payload is required"}), 400
+
+        try:
+            # Clean API from v2.0.0
+            out = rmap.handle_message1(body)
+
+            if "payload" in out:
+                app.logger.info("RMAP initiate: success")
+                return jsonify(out), 200
+            else:
+                app.logger.warning(f"RMAP initiate: {out.get('error', 'unknown error')}")
+                return jsonify(out), 400
+
+        except Exception as e:
+            app.logger.exception("rmap-initiate failed: %s", e)
+            return jsonify({"error": "server error"}), 500
+
+    # Message 2 -> one-time link
+    @app.post("/rmap-get-link")
+    def rmap_get_link():
+        """Handle RMAP Message 2 and create watermarked PDF"""
+        rmap = app.config.get("RMAP")
+        if rmap is None:
+            return jsonify({"error": "RMAP not initialized"}), 503
+
+        body = request.get_json(silent=True) or {}
+        if "payload" not in body:
+            return jsonify({"error": "payload is required"}), 400
+
+        try:
+            out = rmap.handle_message2(body)
+
+            if "result" not in out:
+                app.logger.warning(f"RMAP get-link: {out.get('error', 'unknown error')}")
+                return jsonify(out), 400
+
+            # Extract identity from RMAP session (if available)
+            # v2.0.0 should include this in the response
+            identity = out.get("identity", "Unknown")
+            result_hex = out["result"]
+
+            app.logger.info(f"RMAP get-link: creating link for {identity}")
+
+            # Create watermarked PDF and generate link
+            link_data = _rmap_make_link(result_hex, identity)
+
+            return jsonify(link_data), 200
+
+        except Exception as e:
+            app.logger.exception("rmap-get-link failed: %s", e)
+            return jsonify({"error": "server error"}), 500
+
+    # One-time download endpoint
+    @app.get("/rmap-download/<token>")
+    def rmap_download(token: str):
+        """
+        Serve watermarked PDF using one-time token.
+        Token is consumed after download.
+        """
+        tokens = app.config.get("RMAP_TOKENS", {})
+        token_data = tokens.pop(token, None)  # One-time use!
+
+        if not token_data:
+            app.logger.warning(f"RMAP download: invalid/expired token {token[:8]}...")
+            abort(404)
+
+        # Check expiration
+        if time.time() > token_data["expires"]:
+            app.logger.warning(f"RMAP download: expired token for {token_data.get('identity')}")
+            abort(404)
+
+        # Get watermarked PDF
+        pdf_path = Path(token_data["pdf_path"])
+        if not pdf_path.exists():
+            app.logger.error(f"RMAP download: PDF missing at {pdf_path}")
+            abort(500)
+
+        identity = token_data.get("identity", "Unknown")
+        app.logger.info(f"RMAP download: serving watermarked PDF to {identity}")
+
+        return send_file(
+            str(pdf_path),
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=f"Document_Group17.pdf",  # Change to your group name
+            max_age=0,
+            conditional=False,
+            etag=False,
+            last_modified=None,
+        )
+
+    # ====================== end RMAP section ======================
+
 
     return app
     

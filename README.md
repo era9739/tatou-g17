@@ -54,5 +54,13 @@ http -v :5000/healthz
 # Open your browser at 127.0.0.1:5000 to check if the website is up.
 ```
 
+Test RMAP
+
+rmap-client --client-priv server_private.asc \
+            --identity Group_17 \
+            --server-pub server_public.asc \
+            --server 127.0.0.1
+
+
 
 

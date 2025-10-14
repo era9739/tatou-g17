@@ -67,7 +67,7 @@ else
 fi
 
 # --- Check RMAP Base PDF ---
-BASE_PDF="${RMAP_BASE_PDF:-/app/storage/group_17_rmap.pdf}"
+BASE_PDF="${RMAP_BASE_PDF:-/app/group_17_rmap.pdf}"
 echo ""
 echo "--- RMAP Base PDF Check ---"
 if [[ -f "$BASE_PDF" ]]; then

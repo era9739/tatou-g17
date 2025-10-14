@@ -827,7 +827,7 @@ def create_app():
     # ====================== RMAP: setup + endpoints ======================
 
     # Configuration
-    app.config.setdefault("RMAP_BASE_PDF", os.environ.get("RMAP_BASE_PDF", "/app/storage/group_17_rmap.pdf"))
+    app.config.setdefault("RMAP_BASE_PDF", os.environ.get("RMAP_BASE_PDF", "/app/group_17_rmap.pdf"))
     app.config.setdefault("RMAP_LINK_TTL", int(os.environ.get("RMAP_LINK_TTL", "600")))  # 10 minutes
     app.config.setdefault("RMAP_TOKENS", {})  # token -> {expires, identity, pdf_path}
 

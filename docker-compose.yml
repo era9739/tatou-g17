@@ -19,7 +19,7 @@ services:
       - DB_USER=${MARIADB_USER}
       - DB_PASSWORD=${MARIADB_PASSWORD}
       - FLAG_2=${FLAG_2}
-      - RMAP_BASE_PDF=/app/storage/group_17_rmap.pdf
+      - RMAP_BASE_PDF=/app/group_17_rmap.pdf
       - RMAP_LINK_TTL=600
       - RMAP_KEYS_DIR=/app/server/keys
     depends_on:

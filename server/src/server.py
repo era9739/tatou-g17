@@ -858,67 +858,56 @@ def create_app():
             app.config["RMAP"] = None
 
         # ✅ Initialize RMAP Base PDF in Database on Startup
-        def init_rmap_base_pdf():
-            """Ensure RMAP base PDF exists in the database."""
-            base_pdf_path = Path(app.config["RMAP_BASE_PDF"])
 
-            try:
-                init_rmap_base_pdf()
-            except Exception as e:
-                app.logger.warning(f"RMAP base PDF initialization skipped: {e}")
+    def init_rmap_base_pdf():
+        """Ensure RMAP base PDF exists in the database."""
+        base_pdf_path = Path(app.config["RMAP_BASE_PDF"])
 
-            if not base_pdf_path.exists():
-                app.logger.warning(f"RMAP base PDF not found: {base_pdf_path}")
-                return
+        if not base_pdf_path.exists():
+            app.logger.warning(f"RMAP base PDF not found: {base_pdf_path}")
+            return
 
-            try:
-                with get_engine().begin() as conn:
-                    # Check if already exists
-                    existing = conn.execute(
-                        text("SELECT id FROM Documents WHERE path = :path"),
-                        {"path": str(base_pdf_path)}
-                    ).first()
+        try:
+            with get_engine().begin() as conn:
+                # Check if already exists
+                existing = conn.execute(
+                    text("SELECT id FROM Documents WHERE path = :path"),
+                    {"path": str(base_pdf_path)}
+                ).first()
 
-                    if existing:
-                        app.logger.info(f"RMAP base PDF already in database (id={existing.id})")
-                        return
+                if existing:
+                    app.logger.info(f"RMAP base PDF already in database (id={existing.id})")
+                    return
 
-                    # Create system user if not exists (id=1)
-                    user_exists = conn.execute(
-                        text("SELECT id FROM Users WHERE id = 1")
-                    ).first()
+                # Create system user if needed
+                conn.execute(text("""
+                    INSERT INTO Users (id, email, hpassword, login)
+                    VALUES (10000, 'system@tatou.local', '', 'system')
+                    ON DUPLICATE KEY UPDATE id=id
+                """))
 
-                    if not user_exists:
-                        conn.execute(
-                            text("""
-                                INSERT INTO Users (id, email, hpassword, login)
-                                VALUES (1, 'system@tatou.local', '', 'system')
-                            """)
-                        )
-                        app.logger.info("Created system user (id=1)")
+                # Create document record
+                sha_hex = _sha256_file(base_pdf_path)
+                size = base_pdf_path.stat().st_size
 
-                    # Create document record
-                    sha_hex = _sha256_file(base_pdf_path)
-                    size = base_pdf_path.stat().st_size
+                conn.execute(text("""
+                    INSERT INTO Documents (name, path, ownerid, sha256, size)
+                    VALUES (:name, :path, :ownerid, UNHEX(:sha256hex), :size)
+                """), {
+                    "name": "RMAP Base Document",
+                    "path": str(base_pdf_path),
+                    "ownerid": 10000,
+                    "sha256hex": sha_hex,
+                    "size": size,
+                })
 
-                    conn.execute(
-                        text("""
-                            INSERT INTO Documents (name, path, ownerid, sha256, size)
-                            VALUES (:name, :path, :ownerid, UNHEX(:sha256hex), :size)
-                        """),
-                        {
-                            "name": "RMAP Base Document",
-                            "path": str(base_pdf_path),
-                            "ownerid": 1,
-                            "sha256hex": sha_hex,
-                            "size": size,
-                        }
-                    )
+                app.logger.info(f"✓ Created RMAP base document in database")
 
-                    app.logger.info(f"✓ Created RMAP base document in database: {base_pdf_path}")
+        except Exception as e:
+            app.logger.error(f"Failed to initialize RMAP base PDF: {e}")
 
-            except Exception as e:
-                app.logger.error(f"Failed to initialize RMAP base PDF: {e}")
+    # Call it when app starts
+
 
     def _create_watermarked_pdf(identity: str, result_hex: str) -> Path:
         """Create a watermarked PDF for the given identity."""
@@ -926,7 +915,7 @@ def create_app():
         if not base_pdf.exists():
             raise FileNotFoundError(f"Base PDF not found: {base_pdf}")
 
-        wm_dir = base_pdf.parent / "watermarks" / "rmap"
+        wm_dir = app.config["STORAGE_DIR"] / "watermarks" / "rmap"
         wm_dir.mkdir(parents=True, exist_ok=True)
         wm_path = wm_dir / f"rmap_{result_hex}.pdf"
 
@@ -1065,6 +1054,12 @@ def create_app():
             return jsonify({"error": "server error"}), 500
 
     # ====================== end RMAP section ======================
+
+    with app.app_context():
+        try:
+            init_rmap_base_pdf()
+        except Exception as e:
+            app.logger.error(f"Failed to initialize RMAP base PDF: {e}")
 
     return app
 

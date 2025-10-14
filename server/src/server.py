@@ -857,29 +857,81 @@ def create_app():
             app.logger.exception("Failed to initialize RMAP: %s", e)
             app.config["RMAP"] = None
 
+        # ✅ Initialize RMAP Base PDF in Database on Startup
+        def init_rmap_base_pdf():
+            """Ensure RMAP base PDF exists in the database."""
+            base_pdf_path = Path(app.config["RMAP_BASE_PDF"])
+
+            if not base_pdf_path.exists():
+                app.logger.warning(f"RMAP base PDF not found: {base_pdf_path}")
+                return
+
+            try:
+                with get_engine().begin() as conn:
+                    # Check if already exists
+                    existing = conn.execute(
+                        text("SELECT id FROM Documents WHERE path = :path"),
+                        {"path": str(base_pdf_path)}
+                    ).first()
+
+                    if existing:
+                        app.logger.info(f"RMAP base PDF already in database (id={existing.id})")
+                        return
+
+                    # Create system user if not exists (id=1)
+                    user_exists = conn.execute(
+                        text("SELECT id FROM Users WHERE id = 1")
+                    ).first()
+
+                    if not user_exists:
+                        conn.execute(
+                            text("""
+                                INSERT INTO Users (id, email, hpassword, login)
+                                VALUES (1, 'system@tatou.local', '', 'system')
+                            """)
+                        )
+                        app.logger.info("Created system user (id=1)")
+
+                    # Create document record
+                    sha_hex = _sha256_file(base_pdf_path)
+                    size = base_pdf_path.stat().st_size
+
+                    conn.execute(
+                        text("""
+                            INSERT INTO Documents (name, path, ownerid, sha256, size)
+                            VALUES (:name, :path, :ownerid, UNHEX(:sha256hex), :size)
+                        """),
+                        {
+                            "name": "RMAP Base Document",
+                            "path": str(base_pdf_path),
+                            "ownerid": 1,
+                            "sha256hex": sha_hex,
+                            "size": size,
+                        }
+                    )
+
+                    app.logger.info(f"✓ Created RMAP base document in database: {base_pdf_path}")
+
+            except Exception as e:
+                app.logger.error(f"Failed to initialize RMAP base PDF: {e}")
+
     def _create_watermarked_pdf(identity: str, result_hex: str) -> Path:
-        """
-        Create a watermarked PDF for the given identity.
-        Returns the path to the watermarked file.
-        """
+        """Create a watermarked PDF for the given identity."""
         base_pdf = Path(app.config["RMAP_BASE_PDF"])
         if not base_pdf.exists():
             raise FileNotFoundError(f"Base PDF not found: {base_pdf}")
 
-        # Watermark storage
         wm_dir = base_pdf.parent / "watermarks" / "rmap"
         wm_dir.mkdir(parents=True, exist_ok=True)
         wm_path = wm_dir / f"rmap_{result_hex}.pdf"
 
-        # Skip if already exists
         if wm_path.exists():
             app.logger.info(f"Reusing existing watermark for {identity}")
             return wm_path
 
-        # Create watermark
         secret = f"RMAP:{identity}:{result_hex}:{int(time.time())}"
         key = app.config["SECRET_KEY"]
-        method = "whitespace-stego"  # Use your best method
+        method = "whitespace-stego"
 
         app.logger.info(f"Creating watermark for {identity} with method {method}")
 
@@ -892,43 +944,10 @@ def create_app():
                 position=None
             )
 
-            # Save watermarked PDF
             with wm_path.open("wb") as f:
                 f.write(wm_bytes)
 
             app.logger.info(f"Watermark created: {wm_path} ({len(wm_bytes)} bytes)")
-
-            # Optional: Store in database for tracking
-            try:
-                with get_engine().begin() as conn:
-                    # Find the base document ID
-                    doc_row = conn.execute(
-                        text("SELECT id FROM Documents WHERE path = :path"),
-                        {"path": str(base_pdf)}
-                    ).first()
-
-                    if doc_row:
-                        conn.execute(
-                            text("""
-                                INSERT INTO Versions 
-                                (documentid, link, intended_for, secret, method, position, path)
-                                VALUES (:documentid, :link, :intended_for, :secret, :method, :position, :path)
-                            """),
-                            {
-                                "documentid": doc_row.id,
-                                "link": result_hex,
-                                "intended_for": identity,
-                                "secret": secret,
-                                "method": method,
-                                "position": "",
-                                "path": str(wm_path)
-                            }
-                        )
-                        app.logger.info(f"Version record created for {identity}")
-            except Exception as e:
-                app.logger.warning(f"Failed to create version record: {e}")
-                # Continue anyway - watermark is already created
-
             return wm_path
 
         except Exception as e:
@@ -936,34 +955,52 @@ def create_app():
             raise
 
     def _rmap_make_link(result_hex: str, identity: str) -> dict:
-        """
-        Create watermarked PDF and generate one-time download link.
-        """
+        """Create watermarked PDF and Version record."""
         token = result_hex.lower()
-        expires = int(time.time()) + app.config["RMAP_LINK_TTL"]
 
-        # Create watermarked PDF
         try:
+            # Create watermarked PDF
             pdf_path = _create_watermarked_pdf(identity, result_hex)
+
+            # Store in database
+            with get_engine().begin() as conn:
+                # Find RMAP base document
+                doc_row = conn.execute(
+                    text("SELECT id FROM Documents WHERE name = :name"),
+                    {"name": "RMAP Base Document"}
+                ).first()
+
+                if not doc_row:
+                    raise RuntimeError("RMAP base document not found in database")
+
+                # Create Version record
+                conn.execute(
+                    text("""
+                        INSERT INTO Versions 
+                        (documentid, link, intended_for, secret, method, position, path)
+                        VALUES (:documentid, :link, :intended_for, :secret, :method, :position, :path)
+                    """),
+                    {
+                        "documentid": doc_row.id,
+                        "link": token,
+                        "intended_for": identity,
+                        "secret": f"RMAP:{identity}:{token}:{int(time.time())}",
+                        "method": "whitespace-stego",
+                        "position": "",
+                        "path": str(pdf_path)
+                    }
+                )
+
+                app.logger.info(f"Created Version record with link={token} for {identity}")
+
+            return {"token": token}
+
         except Exception as e:
             app.logger.error(f"Failed to create watermark: {e}")
             raise
 
-        # Store token with metadata
-        app.config["RMAP_TOKENS"][token] = {
-            "expires": expires,
-            "identity": identity,
-            "pdf_path": str(pdf_path),
-            "created": int(time.time())
-        }
-
-        return {
-            "link": url_for("rmap_download", token=token, _external=True),
-            "expires": expires,
-        }
-
     # Message 1 -> Response 1
-    @app.post("/rmap-initiate")
+    @app.post("/api/rmap-initiate")
     def rmap_initiate():
         """Handle RMAP Message 1"""
         rmap = app.config.get("RMAP")
@@ -975,7 +1012,6 @@ def create_app():
             return jsonify({"error": "payload is required"}), 400
 
         try:
-            # Clean API from v2.0.0
             out = rmap.handle_message1(body)
 
             if "payload" in out:
@@ -989,8 +1025,8 @@ def create_app():
             app.logger.exception("rmap-initiate failed: %s", e)
             return jsonify({"error": "server error"}), 500
 
-    # Message 2 -> one-time link
-    @app.post("/rmap-get-link")
+    # Message 2 -> result
+    @app.post("/api/rmap-get-link")
     def rmap_get_link():
         """Handle RMAP Message 2 and create watermarked PDF"""
         rmap = app.config.get("RMAP")
@@ -1008,60 +1044,24 @@ def create_app():
                 app.logger.warning(f"RMAP get-link: {out.get('error', 'unknown error')}")
                 return jsonify(out), 400
 
-            # Extract identity from RMAP session (if available)
-            # v2.0.0 should include this in the response
             identity = out.get("identity", "Unknown")
             result_hex = out["result"]
 
             app.logger.info(f"RMAP get-link: creating link for {identity}")
 
-            # Create watermarked PDF and generate link
-            link_data = _rmap_make_link(result_hex, identity)
+            # Create watermarked PDF and Version record
+            _rmap_make_link(result_hex, identity)
 
-            return jsonify(link_data), 200
+            # Return just the result (client will use /api/get-version/<result>)
+            return jsonify({"result": result_hex}), 200
 
         except Exception as e:
             app.logger.exception("rmap-get-link failed: %s", e)
             return jsonify({"error": "server error"}), 500
 
-    # One-time download endpoint
-    @app.get("/rmap-download/<token>")
-    def rmap_download(token: str):
-        """
-        Serve watermarked PDF using one-time token.
-        Token is consumed after download.
-        """
-        tokens = app.config.get("RMAP_TOKENS", {})
-        token_data = tokens.pop(token, None)  # One-time use!
-
-        if not token_data:
-            app.logger.warning(f"RMAP download: invalid/expired token {token[:8]}...")
-            abort(404)
-
-        # Check expiration
-        if time.time() > token_data["expires"]:
-            app.logger.warning(f"RMAP download: expired token for {token_data.get('identity')}")
-            abort(404)
-
-        # Get watermarked PDF
-        pdf_path = Path(token_data["pdf_path"])
-        if not pdf_path.exists():
-            app.logger.error(f"RMAP download: PDF missing at {pdf_path}")
-            abort(500)
-
-        identity = token_data.get("identity", "Unknown")
-        app.logger.info(f"RMAP download: serving watermarked PDF to {identity}")
-
-        return send_file(
-            str(pdf_path),
-            mimetype="application/pdf",
-            as_attachment=True,
-            download_name=f"Document_Group17.pdf",  # Change to your group name
-            max_age=0,
-            conditional=False,
-            etag=False,
-            last_modified=None,
-        )
+    # Initialize RMAP base PDF on startup
+    with app.app_context():
+        init_rmap_base_pdf()
 
     # ====================== end RMAP section ======================
 

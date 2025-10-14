@@ -56,6 +56,8 @@ http -v :5000/healthz
 
 Test RMAP
 
+python -m pip install rmap@git+https://github.com/nharrand/RMAP-Server.git@v2.0.0
+
 rmap-client --client-priv server_private.asc \
             --identity Group_17 \
             --server-pub server_public.asc \

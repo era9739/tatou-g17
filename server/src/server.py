@@ -172,7 +172,7 @@ def create_app():
         user_dir = app.config["STORAGE_DIR"] / "files" / g.user["login"]
         user_dir.mkdir(parents=True, exist_ok=True)
 
-        ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%S%fZ")
+        ts = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S%fZ")
         final_name = request.form.get("name") or fname
         stored_name = f"{ts}__{fname}"
         stored_path = user_dir / stored_name

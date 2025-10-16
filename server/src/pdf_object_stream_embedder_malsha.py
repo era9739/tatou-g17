@@ -1,12 +1,12 @@
 import zlib
-from watermarking_method import (
+from server.src.watermarking_method import (
     WatermarkingMethod,
     load_pdf_bytes,
     SecretNotFoundError,
 )
 
-
 class PdfObjectStreamEmbedder(WatermarkingMethod):
+
     name = "pdf-object-stream-embedder"
     _OBJ_ID = 9999  # Arbitrary high number
 
@@ -20,10 +20,10 @@ class PdfObjectStreamEmbedder(WatermarkingMethod):
         data = load_pdf_bytes(pdf)
         compressed = zlib.compress(secret.encode("utf-8"))
         stream = (
-                     f"\n{self._OBJ_ID} 0 obj\n"
-                     f"<< /Length {len(compressed)} >>\n"
-                     f"stream\n"
-                 ).encode("utf-8") + compressed + b"\nendstream\nendobj\n"
+            f"\n{self._OBJ_ID} 0 obj\n"
+            f"<< /Length {len(compressed)} >>\n"
+            f"stream\n"
+        ).encode("utf-8") + compressed + b"\nendstream\nendobj\n"
         return data + stream
 
     def is_watermark_applicable(self, pdf, position: str | None = None) -> bool:

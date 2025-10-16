@@ -45,6 +45,11 @@ from add_after_eof import AddAfterEOF
 from unsafe_bash_bridge_append_eof import UnsafeBashBridgeAppendEOF
 from whitespace_steganography import WhitespaceSteganography
 from base64_invisible_comment import Base64InvisibleComment
+from pdf_object_stream_embedder import PdfObjectStreamEmbedder
+
+
+
+
 
 
 
@@ -52,11 +57,14 @@ from base64_invisible_comment import Base64InvisibleComment
 # Method registry
 # --------------------
 
+
 METHODS: Dict[str, WatermarkingMethod] = {
     AddAfterEOF.name: AddAfterEOF(),
     UnsafeBashBridgeAppendEOF.name: UnsafeBashBridgeAppendEOF(),
     WhitespaceSteganography.name: WhitespaceSteganography(),
     Base64InvisibleComment.name: Base64InvisibleComment(),
+    PdfObjectStreamEmbedder.name: PdfObjectStreamEmbedder(),
+
 
 }
 """Registry of available watermarking methods.

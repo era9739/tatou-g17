@@ -27,11 +27,41 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: Run tests
+      - name: Run tests with coverage
         working-directory: server
         run: |
           . .venv/bin/activate
-          python -m pytest
+          python -m pytest \
+            --verbose \
+            --junit-xml=test-results/junit.xml \
+            --html=test-results/report.html \
+            --self-contained-html \
+            --cov=src \
+            --cov-report=html:test-results/coverage \
+            --cov-report=term
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()  # Upload even if tests fail
+        with:
+          name: test-results
+          path: server/test-results/
+          retention-days: 30
+
+      - name: Publish test results summary
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        if: always()
+        with:
+          files: server/test-results/junit.xml
+          check_name: Test Results
+
+      - name: Comment coverage on PR
+        uses: py-cov-action/python-coverage-comment-action@v3
+        if: github.event_name == 'pull_request'
+        with:
+          GITHUB_TOKEN: ${{ github.token }}
+          MINIMUM_GREEN: 80
+          MINIMUM_ORANGE: 60
 
   docker:
     runs-on: ubuntu-latest
@@ -57,4 +87,4 @@ jobs:
           push: true
           tags: |
             erangis/group17:latest
-            erangis/group17:${{ github.sha }}        
+            erangis/group17:${{ github.sha }}

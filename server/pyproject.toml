@@ -18,7 +18,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0.0"
+    "pytest>=7.0.0",
+    "pytest-html>=4.0.0",
+    "pytest-cov>=4.0.0"
 ]
 
 [tool.pytest.ini_options]
@@ -27,4 +29,4 @@ testpaths = ["test/"]
 python_files = ["test_*.py"]
 
 [project.scripts]
-pdfwm = "watermarking_cli:main"                 # now you can run `pdfwm methods`
+pdfwm = "watermarking_cli:main"

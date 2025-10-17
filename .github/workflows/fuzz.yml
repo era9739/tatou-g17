@@ -40,4 +40,3 @@ steps:
     with:
       name: fuzz-logs
       path: artifacts
-```

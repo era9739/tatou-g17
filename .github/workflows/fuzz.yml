@@ -48,7 +48,7 @@ jobs:
 
       - name: Run simple fuzzer
         run: |
-          python fuzz/simple_fuzzer.py || echo "⚠️ Fuzzer failed but continuing..."
+          python server/fuzz/simple_fuzzer.py || echo "⚠️ Fuzzer failed but continuing..."
 
       - name: Collect logs
         if: always()

@@ -320,6 +320,51 @@ class TestEdgeCases:
         assert len(result1) > 0
         assert len(result2) > 0
 
+    def test_empty_secret_error_message(self, sample_pdf, key):
+        """Test that error message is specific and helpful"""
+        method = WhitespaceSteganography()
+
+        with pytest.raises(ValueError) as exc_info:
+            method.add_watermark(sample_pdf, "", key)
+
+        error_message = str(exc_info.value).lower()
+        assert "secret" in error_message
+        assert "non-empty" in error_message or "empty" in error_message
+        assert "xx" not in error_message.lower()
+
+    def test_none_secret_error_message(self, sample_pdf, key):
+        """Test error message when secret is None"""
+        method = WhitespaceSteganography()
+
+        with pytest.raises((ValueError, TypeError)) as exc_info:
+            method.add_watermark(sample_pdf, None, key)
+
+        assert exc_info.value is not None
+        error_str = str(exc_info.value)
+        assert len(error_str) > 0
+
+    def test_all_error_messages_are_valid(self, sample_pdf, key):
+        """Ensure all error messages in WhitespaceSteganography are proper strings"""
+        method = WhitespaceSteganography()
+
+        # Test empty secret error message
+        try:
+            method.add_watermark(sample_pdf, "", key)
+        except ValueError as e:
+            msg = str(e)
+            assert len(msg) > 0
+            assert "XX" not in msg  # No mutation markers
+            assert msg[0].isupper() or msg[0].isdigit()  # Proper sentence
+
+        # Test invalid key error message
+        watermarked = method.add_watermark(sample_pdf, "test", key)
+        try:
+            method.read_secret(watermarked, "wrong-key")
+        except (InvalidKeyError, Exception) as e:
+            msg = str(e)
+            assert len(msg) > 0
+            assert "XX" not in msg
+
 
 # ============================================================================
 # Encryption/Decryption Tests

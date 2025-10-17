@@ -2,6 +2,7 @@
 import pytest
 from pathlib import Path
 from watermarking_cli import _read_text_from_file
+from security_utils import SecurityError
 
 
 class TestCLIHelpers:
@@ -16,10 +17,14 @@ class TestCLIHelpers:
         result = _read_text_from_file(str(test_file))
         assert result == test_content
 
-    def test_read_text_from_file_not_found(self):
+    def test_read_text_from_file_not_found(self, tmp_path):
         """Test reading from non-existent file raises error"""
-        with pytest.raises(FileNotFoundError):
-            _read_text_from_file("/nonexistent/file.txt")
+        # Use a path that would be allowed (in tmp) but doesn't exist
+        nonexistent = tmp_path / "nonexistent_file.txt"
+
+        with pytest.raises((FileNotFoundError, SecurityError)):
+            # Either error is acceptable - file doesn't exist or path validation
+            _read_text_from_file(str(nonexistent))
 
     def test_read_text_from_file_with_newlines(self, tmp_path):
         """Test reading file preserves content as-is"""

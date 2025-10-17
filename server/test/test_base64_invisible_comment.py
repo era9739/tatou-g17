@@ -1,4 +1,6 @@
 from pathlib import Path
+
+import pytest
 from base64_invisible_comment import Base64InvisibleComment
 from watermarking_method import SecretNotFoundError
 
@@ -39,6 +41,38 @@ def test_read_secret_raises_when_no_marker(tmp_path: Path):
         assert False, "Expected SecretNotFoundError for unwatermarked PDF"
     except SecretNotFoundError:
         pass  # Expected
+
+
+def test_empty_secret_raises_with_message(sample_pdf):
+    """Test that ValueError has proper error message"""
+    from base64_invisible_comment import Base64InvisibleComment
+
+    method = Base64InvisibleComment()
+
+    with pytest.raises(ValueError) as exc_info:
+        method.add_watermark(sample_pdf, "", "test-key")
+
+    # Error message must not be None
+    assert exc_info.value is not None
+    error_message = str(exc_info.value)
+    assert error_message is not None
+    assert len(error_message) > 0
+    assert "secret" in error_message.lower()
+    assert "empty" in error_message.lower()
+
+
+def test_none_secret_error_handling(sample_pdf):
+    """Test proper error when secret is None"""
+    from base64_invisible_comment import Base64InvisibleComment
+
+    method = Base64InvisibleComment()
+
+    with pytest.raises((ValueError, TypeError)) as exc_info:
+        method.add_watermark(sample_pdf, None, "test-key")
+
+    assert exc_info.value is not None
+    error_str = str(exc_info.value)
+    assert error_str  # Not empty or None
 
 
 

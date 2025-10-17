@@ -337,3 +337,66 @@ class TestEdgeCases:
         })
         # Should either reject (400), accept (201), or conflict (409)
         assert response.status_code in [201, 400, 409]
+
+
+class TestConfiguration:
+    """Test application configuration"""
+
+    def test_secret_key_must_not_be_none(self):
+        """Ensure SECRET_KEY is never None"""
+        app = create_app()
+        assert app.config["SECRET_KEY"] is not None
+        assert app.config["SECRET_KEY"] != ""
+        assert len(app.config["SECRET_KEY"]) >= 8
+
+    def test_secret_key_from_environment(self, monkeypatch):
+        """Test SECRET_KEY loads from environment variable"""
+        monkeypatch.setenv("SECRET_KEY", "test-custom-key-123")
+        app = create_app()
+        assert app.config["SECRET_KEY"] == "test-custom-key-123"
+
+    def test_secret_key_has_default(self):
+        """Test SECRET_KEY has secure default if env not set"""
+        import os
+        # Clear environment variable if set
+        old_key = os.environ.get("SECRET_KEY")
+        if "SECRET_KEY" in os.environ:
+            del os.environ["SECRET_KEY"]
+
+        app = create_app()
+        # Should have a default value
+        assert app.config["SECRET_KEY"] is not None
+        assert app.config["SECRET_KEY"] == "ehmgr17key"
+
+        # Restore if it was set
+        if old_key:
+            os.environ["SECRET_KEY"] = old_key
+
+    def test_rmap_keys_dir_config(self, monkeypatch):
+        """Test RMAP_KEYS_DIR loads from environment"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            monkeypatch.setenv("RMAP_KEYS_DIR", tmpdir)
+            app = create_app()
+
+            # Verify the config is used (we'd need to check internal state)
+            # For now, just ensure app starts without crashing
+            assert app is not None
+            assert app.config["SECRET_KEY"] is not None
+
+    def test_rmap_keys_dir_default(self):
+        """Test RMAP_KEYS_DIR has working default"""
+        import os
+        # Clear env var if set
+        old_val = os.environ.get("RMAP_KEYS_DIR")
+        if "RMAP_KEYS_DIR" in os.environ:
+            del os.environ["RMAP_KEYS_DIR"]
+
+        app = create_app()
+
+        # Should use default path without crashing
+        assert app is not None
+
+        # Restore if it was set
+        if old_val:
+            os.environ["RMAP_KEYS_DIR"] = old_val

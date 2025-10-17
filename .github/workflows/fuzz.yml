@@ -1,37 +1,43 @@
 name: Fuzz-Simple
+
 on:
-  workflow_dispatch:
-  schedule:
-    - cron: "0 3 * * 1"  # weekly run 
+workflow_dispatch:  # allows manual trigger from GitHub Actions tab
 
 jobs:
-  run-fuzz:
-    runs-on: ubuntu-latest
-    services:
-      docker:
-        image: docker:20.10.16
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.11"
-      - name: Install deps
-        run: |
-          python -m pip install -U pip
-          pip install requests pytest
-      - name: Start app via docker-compose
-        run: |
-          docker-compose up -d --build
-          sleep 10
-      - name: Run simple fuzzer
-        run: |
-          python fuzz/simple_fuzzer.py
-      - name: Collect logs
-        run: |
-          docker logs tatou-server-1 > ./artifacts/fuzz_server_logs.txt || true
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: fuzz-logs
-          path: ./artifacts
+run-fuzz:
+runs-on: ubuntu-latest
+
+steps:
+  - name: Checkout repository
+    uses: actions/checkout@v4
+
+  - name: Set up Python
+    uses: actions/setup-python@v4
+    with:
+      python-version: "3.11"
+
+  - name: Install dependencies
+    run: |
+      python -m pip install --upgrade pip
+      pip install requests pytest
+
+  - name: Start application with Docker Compose
+    run: |
+      docker compose up -d --build
+      sleep 10
+
+  - name: Run simple fuzzer
+    run: |
+      python fuzz/simple_fuzzer.py
+
+  - name: Collect logs
+    run: |
+      mkdir -p artifacts
+      docker compose logs tatou-server-1 > artifacts/fuzz_server_logs.txt || true
+
+  - name: Upload artifacts
+    uses: actions/upload-artifact@v4
+    with:
+      name: fuzz-logs
+      path: artifacts
+```

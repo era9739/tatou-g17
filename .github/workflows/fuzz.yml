@@ -30,22 +30,35 @@ jobs:
       - name: Start application with Docker Compose
         run: |
           docker compose up -d --build || true
-          sleep 20
+          echo "⏳ Waiting for DB to become healthy..."
+          for i in {1..30}; do
+            health=$(docker inspect --format='{{json .State.Health.Status}}' tatou-g17-db-1 2>/dev/null || echo "unknown")
+            echo "DB health: $health"
+            if [[ "$health" == "\"healthy\"" ]]; then
+              echo "✅ Database is healthy!"
+              break
+            fi
+            sleep 5
+          done
           docker ps -a
 
       - name: Show DB logs
+        if: always()
         run: docker compose logs db || true
 
       - name: Run simple fuzzer
         run: |
-          python fuzz/simple_fuzzer.py || echo "Fuzzer failed but continuing..."
+          python fuzz/simple_fuzzer.py || echo "⚠️ Fuzzer failed but continuing..."
 
       - name: Collect logs
+        if: always()
         run: |
           mkdir -p artifacts
           docker compose logs server > artifacts/fuzz_server_logs.txt || true
+          docker compose logs db > artifacts/db_logs.txt || true
 
       - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-logs

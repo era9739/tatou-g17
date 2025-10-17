@@ -1,11 +1,17 @@
 name: Fuzz-Simple
 
 on:
-  workflow_dispatch:  # allows manual trigger from GitHub Actions tab
+  workflow_dispatch:
 
 jobs:
   run-fuzz:
     runs-on: ubuntu-latest
+
+    env:
+      MARIADB_ROOT_PASSWORD: ${{ secrets.MARIADB_ROOT_PASSWORD }}
+      MARIADB_USER: ${{ secrets.MARIADB_USER }}
+      MARIADB_PASSWORD: ${{ secrets.MARIADB_PASSWORD }}
+      FLAG_2: ${{ secrets.FLAG_2 }}
 
     steps:
       - name: Checkout repository
@@ -24,13 +30,11 @@ jobs:
       - name: Start application with Docker Compose
         run: |
           docker compose up -d --build || true
-          echo "Waiting for containers to settle..."
           sleep 20
           docker ps -a
 
-      - name: Show DB logs (for debugging)
-        run: |
-          docker compose logs db || true
+      - name: Show DB logs
+        run: docker compose logs db || true
 
       - name: Run simple fuzzer
         run: |

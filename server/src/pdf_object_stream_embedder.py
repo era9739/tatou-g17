@@ -1,5 +1,5 @@
 import zlib
-from server.src.watermarking_method import (
+from watermarking_method import (
     WatermarkingMethod,
     load_pdf_bytes,
     SecretNotFoundError,

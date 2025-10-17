@@ -1,6 +1,6 @@
 import unittest
-from server.src.pdf_object_stream_embedder import PdfObjectStreamEmbedder
-from server.src.watermarking_method import SecretNotFoundError
+from pdf_object_stream_embedder import PdfObjectStreamEmbedder
+from watermarking_method import SecretNotFoundError
 
 
 class TestPdfObjectStreamEmbedder(unittest.TestCase):

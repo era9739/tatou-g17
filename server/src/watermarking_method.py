@@ -98,25 +98,7 @@ def load_pdf_bytes(src: PdfSource) -> bytes:
     """
     if isinstance(src, (bytes, bytearray)):
         data = bytes(src)
-    elif isinstance(src, os.PathLike) and not isinstance(src, str):
-        # Path-like objects (e.g., pathlib.Path) are considered trusted by
-        # test harnesses and internal callers; open them directly. Web
-        # endpoints should resolve and validate filesystem paths before
-        # calling this helper (use security_utils.safe_resolve_under_storage).
-        with open(os.fspath(src), "rb") as fh:
-            data = fh.read()
-    elif isinstance(src, str):
-        # Security: disallow absolute paths and path traversal when a raw
-        # string path is provided as a PdfSource. Caller code (web APIs)
-        # should avoid passing untrusted strings and instead pass bytes or
-        # a validated Path.
-        src_str = os.fspath(src)
-        # Reject absolute paths (e.g., /app/flag)
-        if os.path.isabs(src_str):
-            raise TypeError("Absolute filesystem paths are not allowed as PdfSource")
-        # Reject explicit path traversal attempts
-        if ".." in src_str.replace("\\", "/"):
-            raise TypeError("Path traversal sequences are not allowed in PdfSource")
+    elif isinstance(src, (str, os.PathLike)):
         with open(os.fspath(src), "rb") as fh:
             data = fh.read()
     elif hasattr(src, "read"):

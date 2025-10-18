@@ -14,14 +14,24 @@ from unittest.mock import Mock, patch, MagicMock, ANY
 class TestRMAPInitiate:
     """Test suite for /api/rmap-initiate endpoint"""
 
-    def test_rmap_initiate_missing_payload(self, client):
+    @patch('server.RMAP')
+    def test_rmap_initiate_missing_payload(self, mock_rmap_class, client, app):
         """Test that missing payload returns 400"""
+        # Set up mock RMAP so endpoint doesn't return 503
+        mock_rmap = Mock()
+        app.config["RMAP"] = mock_rmap
+
         response = client.post('/api/rmap-initiate', json={})
         assert response.status_code == 400
         assert "payload is required" in response.json["error"].lower()
 
-    def test_rmap_initiate_invalid_json(self, client):
+    @patch('server.RMAP')
+    def test_rmap_initiate_invalid_json(self, mock_rmap_class, client, app):
         """Test that invalid JSON returns 400"""
+        # Set up mock RMAP so endpoint doesn't return 503
+        mock_rmap = Mock()
+        app.config["RMAP"] = mock_rmap
+
         response = client.post(
             '/api/rmap-initiate',
             data="not json",
@@ -29,8 +39,15 @@ class TestRMAPInitiate:
         )
         assert response.status_code in [400, 415]
 
-    def test_rmap_initiate_empty_payload(self, client):
+    @patch('server.RMAP')
+    def test_rmap_initiate_empty_payload(self, mock_rmap_class, client, app):
         """Test that empty payload field returns 400"""
+        # Set up mock RMAP so endpoint doesn't return 503
+        mock_rmap = Mock()
+        # Configure mock to return an error for empty payload
+        mock_rmap.handle_message1.return_value = {"error": "invalid payload"}
+        app.config["RMAP"] = mock_rmap
+
         response = client.post('/api/rmap-initiate', json={"payload": ""})
         assert response.status_code == 400
 

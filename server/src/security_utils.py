@@ -225,7 +225,33 @@ def validate_pdf_file(path: Path, max_size_mb: int = 100) -> bool:
         raise SecurityError(f"Cannot read file: {e}")
 
     return True
+def safe_resolve_under_storage(storage_dir: Path, candidate: str) -> Path:
+    """
+    Resolve a candidate filename (or relative path) under the given storage
+    directory and ensure it does not escape that directory.
+    Raises SecurityError if the resolved path is outside storage_dir or if the
+    candidate appears to be an absolute path or contains traversal sequences.
+    """
+    if not candidate or not candidate.strip():
+        raise SecurityError("Empty filename")
 
+    # Reject absolute paths outright
+    if os.path.isabs(candidate):
+        raise SecurityError("Absolute paths are not allowed")
+
+    # Reject path traversal sequences
+    if ".." in candidate.replace("\\", "/"):
+        raise SecurityError("Path traversal not allowed")
+
+    resolved = (storage_dir / candidate).resolve()
+    storage_resolved = storage_dir.resolve()
+
+    try:
+        resolved.relative_to(storage_resolved)
+    except Exception:
+        raise SecurityError("Resolved path escapes storage directory")
+
+    return resolved
 
 # ============================================================================
 # Input Sanitization Functions

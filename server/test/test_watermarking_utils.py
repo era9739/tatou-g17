@@ -1,5 +1,6 @@
 import pytest
 import json
+from pathlib import Path
 
 from watermarking_utils import (
     apply_watermark,
@@ -86,6 +87,8 @@ class TestApplyWatermark:
 
     def test_apply_watermark_preserves_pdf(self, sample_pdf):
         """Test watermarking preserves PDF structure"""
+        original = sample_pdf.read_bytes()
+
         result = apply_watermark(
             method="toy-eof",
             pdf=sample_pdf,

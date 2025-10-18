@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 from unsafe_bash_bridge_append_eof import UnsafeBashBridgeAppendEOF
 from watermarking_method import SecretNotFoundError  # ← CORRECT IMPORT
 

@@ -17,7 +17,6 @@ Requirements
 - cryptography for AES encryption
 - No PDF parsing library needed (works with raw bytes)
 """
-
 from __future__ import annotations
 
 from typing import Final
@@ -29,13 +28,12 @@ try:
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 except ImportError:
-    raise ImportError(
-        "cryptography is required. Install with: pip install cryptography"
-    )
+    raise ImportError("cryptography is required. Install with: pip install cryptography")
 
 from watermarking_method import (
     InvalidKeyError,
     SecretNotFoundError,
+    WatermarkingError,
     WatermarkingMethod,
     PdfSource,
     load_pdf_bytes,
@@ -99,7 +97,7 @@ class WhitespaceSteganography(WatermarkingMethod):
         out = data
         if not out.endswith(b"\n"):
             out += b"\n"
-        out += self._MAGIC + whitespace_data.encode("latin-1") + b"\n"
+        out += self._MAGIC + whitespace_data.encode('latin-1') + b"\n"
 
         return out
 
@@ -137,7 +135,7 @@ class WhitespaceSteganography(WatermarkingMethod):
             raise SecretNotFoundError("Found marker but empty whitespace data")
 
         # Decode whitespace to string
-        whitespace_data = whitespace_bytes.decode("latin-1", errors="ignore")
+        whitespace_data = whitespace_bytes.decode('latin-1', errors='ignore')
 
         # Convert whitespace to binary
         binary_str = self._whitespace_to_binary(whitespace_data)
@@ -159,13 +157,13 @@ class WhitespaceSteganography(WatermarkingMethod):
         if len(payload) < offset + self._SALT_SIZE + self._NONCE_SIZE + length:
             raise SecretNotFoundError("Incomplete payload")
 
-        salt = payload[offset : offset + self._SALT_SIZE]
+        salt = payload[offset:offset + self._SALT_SIZE]
         offset += self._SALT_SIZE
 
-        nonce = payload[offset : offset + self._NONCE_SIZE]
+        nonce = payload[offset:offset + self._NONCE_SIZE]
         offset += self._NONCE_SIZE
 
-        encrypted_data = payload[offset : offset + length]
+        encrypted_data = payload[offset:offset + length]
 
         # Decrypt
         return self._decrypt_secret(encrypted_data, key, salt, nonce)
@@ -176,17 +174,17 @@ class WhitespaceSteganography(WatermarkingMethod):
 
     def _bytes_to_binary(self, data: bytes) -> str:
         """Convert bytes to binary string."""
-        return "".join(format(byte, "08b") for byte in data)
+        return ''.join(format(byte, '08b') for byte in data)
 
     def _binary_to_bytes(self, binary: str) -> bytes:
         """Convert binary string to bytes."""
         # Pad to multiple of 8
         padding = (8 - len(binary) % 8) % 8
-        binary = binary + "0" * padding
+        binary = binary + '0' * padding
 
         result = []
         for i in range(0, len(binary), 8):
-            byte_val = int(binary[i : i + 8], 2)
+            byte_val = int(binary[i:i+8], 2)
             result.append(byte_val)
         return bytes(result)
 
@@ -194,25 +192,23 @@ class WhitespaceSteganography(WatermarkingMethod):
         """Convert binary string to whitespace (space=0, tab=1)."""
         result = []
         for bit in binary:
-            if bit == "0":
-                result.append(" ")
+            if bit == '0':
+                result.append(' ')
             else:
-                result.append("\t")
-        return "".join(result)
+                result.append('\t')
+        return ''.join(result)
 
     def _whitespace_to_binary(self, whitespace: str) -> str:
         """Convert whitespace to binary string."""
         result = []
         for char in whitespace:
-            if char == " ":
-                result.append("0")
-            elif char == "\t":
-                result.append("1")
-        return "".join(result)
+            if char == ' ':
+                result.append('0')
+            elif char == '\t':
+                result.append('1')
+        return ''.join(result)
 
-    def _encrypt_secret(
-        self, secret: str, key: str, salt: bytes, nonce: bytes
-    ) -> bytes:
+    def _encrypt_secret(self, secret: str, key: str, salt: bytes, nonce: bytes) -> bytes:
         """Encrypt secret using AES-256-GCM."""
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
@@ -220,17 +216,15 @@ class WhitespaceSteganography(WatermarkingMethod):
             salt=salt,
             iterations=self._KDF_ITERATIONS,
         )
-        derived_key = kdf.derive(key.encode("utf-8"))
+        derived_key = kdf.derive(key.encode('utf-8'))
 
         aesgcm = AESGCM(derived_key)
-        secret_bytes = secret.encode("utf-8")
+        secret_bytes = secret.encode('utf-8')
         ciphertext = aesgcm.encrypt(nonce, secret_bytes, None)
 
         return ciphertext
 
-    def _decrypt_secret(
-        self, encrypted_data: bytes, key: str, salt: bytes, nonce: bytes
-    ) -> str:
+    def _decrypt_secret(self, encrypted_data: bytes, key: str, salt: bytes, nonce: bytes) -> str:
         """Decrypt secret using AES-256-GCM."""
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
@@ -238,12 +232,12 @@ class WhitespaceSteganography(WatermarkingMethod):
             salt=salt,
             iterations=self._KDF_ITERATIONS,
         )
-        derived_key = kdf.derive(key.encode("utf-8"))
+        derived_key = kdf.derive(key.encode('utf-8'))
 
         aesgcm = AESGCM(derived_key)
         try:
             plaintext = aesgcm.decrypt(nonce, encrypted_data, None)
-            return plaintext.decode("utf-8")
+            return plaintext.decode('utf-8')
         except Exception:
             raise InvalidKeyError("Decryption failed - invalid key or corrupted data")
 

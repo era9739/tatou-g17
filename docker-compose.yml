@@ -6,7 +6,7 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - ./server/keys:/app/keys:ro
+      - ./server/keys:/app/server/keys:ro  # Read-only keys
       - user-files:/app/storage
       - ./server/logs:/app/logs
     environment:
@@ -18,25 +18,26 @@ services:
       - DB_PASSWORD=${MARIADB_PASSWORD}
       - FLAG_2=${FLAG_2}
       - RMAP_BASE_PDF=/app/group_17_rmap.pdf
-      - RMAP_KEYS_DIR=/app/keys
+      - RMAP_LINK_TTL=600
+      - RMAP_KEYS_DIR=/app/server/keys
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
 
   db:
-    image: mariadb:10.6
+    image: mariadb:11.4
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     environment:
       - MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD}
       - MARIADB_DATABASE=tatou
       - MARIADB_USER=${MARIADB_USER}
       - MARIADB_PASSWORD=${MARIADB_PASSWORD}
-    ports:
-      - "3307:3306"   # use 3307 on host
     volumes:
       - db-data:/var/lib/mysql
       - ./db/tatou.sql:/docker-entrypoint-initdb.d/10-tatou.sql:ro
+    ports:
+      - "3306:3306"
     healthcheck:
       test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -u root --password=$MARIADB_ROOT_PASSWORD --silent"]
       interval: 10s
@@ -49,15 +50,14 @@ services:
     environment:
       - PMA_HOST=db
       - PMA_PORT=3306
-      - PMA_USER=${MARIADB_USER}
-      - PMA_PASSWORD=${MARIADB_PASSWORD}
+      - UPLOAD_LIMIT=64M     # <-- use a unit and quote if using YAML key:value form
+      - MEMORY_LIMIT=256M
     ports:
       - "8080:80"
     depends_on:
       db:
         condition: service_healthy
-    platform: linux/amd64   # force amd64 for Mac M1/M2
-    restart: unless-stopped
+
 
   prometheus:
     image: prom/prometheus:latest

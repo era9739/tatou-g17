@@ -38,11 +38,12 @@ This module also exposes :func:`load_pdf_bytes` and :func:`is_pdf_bytes`
 which are convenience helpers many implementations will find useful.
 
 """
-
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import IO, ClassVar, TypeAlias, Union
+import io
 import os
 
 # ----------------------------
@@ -74,7 +75,6 @@ class InvalidKeyError(WatermarkingError):
 # Helper functions
 # ----------------------------
 
-
 def load_pdf_bytes(src: PdfSource) -> bytes:
     """Normalize a :class:`PdfSource` into raw ``bytes``.
 
@@ -98,32 +98,16 @@ def load_pdf_bytes(src: PdfSource) -> bytes:
     """
     if isinstance(src, (bytes, bytearray)):
         data = bytes(src)
-    elif isinstance(src, os.PathLike) and not isinstance(src, str):
-        # Path-like objects (e.g., pathlib.Path) are considered trusted by
-        # test harnesses and internal callers; open them directly. Web
-        # endpoints should resolve and validate filesystem paths before
-        # calling this helper (use security_utils.safe_resolve_under_storage).
-        with open(os.fspath(src), "rb") as fh:
-            data = fh.read()
-    elif isinstance(src, str):
-        # Security: disallow absolute paths and path traversal when a raw
-        # string path is provided as a PdfSource. Caller code (web APIs)
-        # should avoid passing untrusted strings and instead pass bytes or
-        # a validated Path.
-        src_str = os.fspath(src)
-        # Reject absolute paths (e.g., /app/flag)
-        if os.path.isabs(src_str):
-            raise TypeError("Absolute filesystem paths are not allowed as PdfSource")
-        # Reject explicit path traversal attempts
-        if ".." in src_str.replace("\\", "/"):
-            raise TypeError("Path traversal sequences are not allowed in PdfSource")
+    elif isinstance(src, (str, os.PathLike)):
         with open(os.fspath(src), "rb") as fh:
             data = fh.read()
     elif hasattr(src, "read"):
         # Treat as a binary file-like (IO[bytes])
         data = src.read()  # type: ignore[attr-defined]
     else:
-        raise TypeError("Unsupported PdfSource; expected bytes, path, or binary IO")
+        raise TypeError(
+            "Unsupported PdfSource; expected bytes, path, or binary IO"
+        )
 
     if not is_pdf_bytes(data):
         raise ValueError("Input does not look like a valid PDF (missing %PDF header)")
@@ -144,7 +128,6 @@ def is_pdf_bytes(data: bytes) -> bool:
 # Abstract base class (the contract)
 # ---------------------------------
 
-
 class WatermarkingMethod(ABC):
     """Abstract base class for PDF watermarking algorithms.
 
@@ -157,13 +140,14 @@ class WatermarkingMethod(ABC):
     #: Concrete implementations should override this with a short name
     #: (e.g., "toy-eof", "xmp-metadata", "object-stream").
     name: ClassVar[str] = "abstract"
-
+    
+    
     @staticmethod
     @abstractmethod
     def get_usage() -> str:
         """Return a a string containing a description of the expected usage.
 
-        It's highly recommended to provide a description if custom position
+        It's highly recommended to provide a description if custom position 
         is expected.
 
         Returns
@@ -213,14 +197,14 @@ class WatermarkingMethod(ABC):
             If inputs are invalid (e.g., not a PDF or empty secret).
         """
         raise NotImplementedError
-
+        
     @abstractmethod
     def is_watermark_applicable(
         self,
         pdf: PdfSource,
         position: str | None = None,
     ) -> bool:
-        """Return whether the method is applicable on this specific method
+        """Return whether the method is applicable on this specific method 
 
         Parameters
         ----------
@@ -285,3 +269,4 @@ __all__ = [
     "is_pdf_bytes",
     "WatermarkingMethod",
 ]
+

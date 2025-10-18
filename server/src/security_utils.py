@@ -12,10 +12,13 @@ Date: October 2025
 """
 
 import sys
-import os
 from pathlib import Path
 import warnings
 
+
+# ============================================================================
+# Custom Exception and Warning Classes
+# ============================================================================
 
 class SecurityWarning(UserWarning):
     """
@@ -24,7 +27,6 @@ class SecurityWarning(UserWarning):
     Used to warn users about potentially insecure operations
     without blocking them (e.g., passing keys via CLI).
     """
-
     pass
 
 
@@ -35,7 +37,6 @@ class SecurityError(Exception):
     This is raised for operations that are definitely insecure
     and should not be allowed (e.g., path traversal).
     """
-
     pass
 
 
@@ -43,10 +44,7 @@ class SecurityError(Exception):
 # Path Validation Functions
 # ============================================================================
 
-
-def validate_file_path(
-    path: str, must_exist: bool = False, allow_write: bool = True
-) -> Path:
+def validate_file_path(path: str, must_exist: bool = False, allow_write: bool = True) -> Path:
     """
     Validate file path for security.
 
@@ -127,27 +125,16 @@ def validate_file_path(
 
         # Unix/Linux system paths
         forbidden_patterns = [
-            "/etc/",
-            "/sys/",
-            "/proc/",
-            "/dev/",
-            "/boot/",
-            "/root/",
-            "/var/log/",
-            "/usr/bin/",
-            "/sbin/",
+            "/etc/", "/sys/", "/proc/", "/dev/", "/boot/",
+            "/root/", "/var/log/", "/usr/bin/", "/sbin/"
         ]
 
         # Windows system paths
         if sys.platform == "win32":
-            forbidden_patterns.extend(
-                [
-                    "c:\\windows\\",
-                    "c:\\program files\\",
-                    "c:\\system32\\",
-                    "\\windows\\system32\\",
-                ]
-            )
+            forbidden_patterns.extend([
+                "c:\\windows\\", "c:\\program files\\",
+                "c:\\system32\\", "\\windows\\system32\\"
+            ])
 
         for pattern in forbidden_patterns:
             if pattern in path_str:
@@ -160,7 +147,7 @@ def validate_file_path(
         warnings.warn(
             f"Path contains '..' - resolved to: {file_path}",
             SecurityWarning,
-            stacklevel=2,
+            stacklevel=2
         )
 
     # Check existence if required
@@ -172,18 +159,18 @@ def validate_file_path(
         try:
             stat_info = file_path.stat()
             # Don't allow writing to files owned by root (on Unix)
-            if hasattr(stat_info, "st_uid") and stat_info.st_uid == 0:
-                raise SecurityError("Cannot modify system files (owned by root)")
+            if hasattr(stat_info, 'st_uid') and stat_info.st_uid == 0:
+                raise SecurityError(
+                    "Cannot modify system files (owned by root)"
+                )
         except (OSError, PermissionError):
             pass  # If we can't stat, that's okay
 
     return file_path
 
-
 # ============================================================================
 # PDF Validation Functions
 # ============================================================================
-
 
 def validate_pdf_file(path: Path, max_size_mb: int = 100) -> bool:
     """
@@ -227,52 +214,22 @@ def validate_pdf_file(path: Path, max_size_mb: int = 100) -> bool:
 
     # Check magic bytes for PDF
     try:
-        with path.open("rb") as f:
+        with path.open('rb') as f:
             header = f.read(5)
-            if not header.startswith(b"%PDF-"):
+            if not header.startswith(b'%PDF-'):
                 raise SecurityError(
                     f"File is not a valid PDF (wrong magic bytes). "
                     f"Expected '%PDF-', got '{header[:5]}'"
                 )
-    except OSError as e:
-        raise SecurityError(f"Cannot read file header: {e}")
+    except (OSError, PermissionError) as e:
+        raise SecurityError(f"Cannot read file: {e}")
+
     return True
-
-
-def safe_resolve_under_storage(storage_dir: Path, candidate: str) -> Path:
-    """
-    Resolve a candidate filename (or relative path) under the given storage
-    directory and ensure it does not escape that directory.
-
-    Raises SecurityError if the resolved path is outside storage_dir or if the
-    candidate appears to be an absolute path or contains traversal sequences.
-    """
-    if not candidate or not candidate.strip():
-        raise SecurityError("Empty filename")
-
-    # Reject absolute paths outright
-    if os.path.isabs(candidate):
-        raise SecurityError("Absolute paths are not allowed")
-
-    # Reject path traversal sequences
-    if ".." in candidate.replace("\\", "/"):
-        raise SecurityError("Path traversal not allowed")
-
-    resolved = (storage_dir / candidate).resolve()
-    storage_resolved = storage_dir.resolve()
-
-    try:
-        resolved.relative_to(storage_resolved)
-    except Exception:
-        raise SecurityError("Resolved path escapes storage directory")
-
-    return resolved
 
 
 # ============================================================================
 # Input Sanitization Functions
 # ============================================================================
-
 
 def sanitize_method_name(method: str) -> str:
     """
@@ -307,7 +264,9 @@ def sanitize_method_name(method: str) -> str:
 
     # Only allow alphanumeric, dash, and underscore
     allowed_chars = set(
-        "abcdefghijklmnopqrstuvwxyz" "ABCDEFGHIJKLMNOPQRSTUVWXYZ" "0123456789-_"
+        "abcdefghijklmnopqrstuvwxyz"
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        "0123456789-_"
     )
 
     invalid_chars = set(method) - allowed_chars
@@ -319,30 +278,20 @@ def sanitize_method_name(method: str) -> str:
 
     # Check for suspicious patterns (command injection attempts)
     suspicious_patterns = [
-        ";",
-        "|",
-        "&",
-        "$",
-        "`",
-        "(",
-        ")",
-        "<",
-        ">",
-        "\n",
-        "\r",
-        "\x00",
+        ';', '|', '&', '$', '`', '(', ')',
+        '<', '>', '\n', '\r', '\x00'
     ]
 
     for pattern in suspicious_patterns:
         if pattern in method:
-            raise SecurityError(f"Suspicious character '{pattern}' in method name")
+            raise SecurityError(
+                f"Suspicious character '{pattern}' in method name"
+            )
 
     return method
 
 
-def validate_secret_length(
-    secret: str, min_length: int = 1, max_length: int = 10000
-) -> bool:
+def validate_secret_length(secret: str, min_length: int = 1, max_length: int = 10000) -> bool:
     """
     Validate secret/key length to prevent DoS.
 
@@ -370,7 +319,8 @@ def validate_secret_length(
 
     if length < min_length:
         raise SecurityError(
-            f"Secret too short: {length} characters " f"(minimum: {min_length})"
+            f"Secret too short: {length} characters "
+            f"(minimum: {min_length})"
         )
 
     if length > max_length:
@@ -385,7 +335,6 @@ def validate_secret_length(
 # ============================================================================
 # Security Warning Functions
 # ============================================================================
-
 
 def warn_insecure_key_usage():
     """
@@ -407,14 +356,13 @@ def warn_insecure_key_usage():
         "Anyone running 'ps aux' can see your secret key.\n"
         "Use --key-file or --key-stdin for better security.\n",
         SecurityWarning,
-        stacklevel=3,
+        stacklevel=3
     )
 
 
 # ============================================================================
 # Utility Functions
 # ============================================================================
-
 
 def is_safe_filename(filename: str) -> bool:
     """
@@ -436,11 +384,11 @@ def is_safe_filename(filename: str) -> bool:
         return False
 
     # Check for path separators
-    if "/" in filename or "\\" in filename:
+    if '/' in filename or '\\' in filename:
         return False
 
     # Check for parent directory references
-    if ".." in filename:
+    if '..' in filename:
         return False
 
     # Check for hidden files (optional - may want to allow)
@@ -473,16 +421,16 @@ def get_safe_temp_dir() -> Path:
 # ============================================================================
 
 __all__ = [
-    "SecurityWarning",
-    "SecurityError",
-    "validate_file_path",
-    "validate_pdf_file",
-    "sanitize_method_name",
-    "validate_secret_length",
-    "warn_insecure_key_usage",
-    "is_safe_filename",
-    "get_safe_temp_dir",
+    'SecurityWarning',
+    'SecurityError',
+    'validate_file_path',
+    'validate_pdf_file',
+    'sanitize_method_name',
+    'validate_secret_length',
+    'warn_insecure_key_usage',
+    'is_safe_filename',
+    'get_safe_temp_dir',
 ]
 
-__version__ = "1.0.0"
-__author__ = "Tatou Security Team"
+__version__ = '1.0.0'
+__author__ = 'Tatou Security Team'

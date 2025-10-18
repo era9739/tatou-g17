@@ -1,7 +1,6 @@
 import pytest
-from pathlib import Path
 from add_after_eof import AddAfterEOF
-from watermarking_method import SecretNotFoundError, InvalidKeyError, load_pdf_bytes
+from watermarking_method import SecretNotFoundError, InvalidKeyError
 
 
 @pytest.fixture

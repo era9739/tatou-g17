@@ -19,6 +19,7 @@ able to validate it via :meth:`read_secret`.
 No third‑party libraries are required here; only the standard library is
 used. (Other watermarking methods may use PyMuPDF / ``fitz``.)
 """
+
 from __future__ import annotations
 
 from typing import Final
@@ -33,6 +34,7 @@ from watermarking_method import (
     WatermarkingError,
     WatermarkingMethod,
     load_pdf_bytes,
+    PdfSource,
 )
 
 
@@ -63,7 +65,7 @@ class AddAfterEOF(WatermarkingMethod):
     # ---------------------
     # Public API overrides
     # ---------------------
-    
+
     @staticmethod
     def get_usage() -> str:
         return "Toy method that appends a watermark record after the PDF EOF. Position is ignored."
@@ -98,14 +100,13 @@ class AddAfterEOF(WatermarkingMethod):
             out += b"\n"
         out += self._MAGIC + payload + b"\n"
         return out
-        
+
     def is_watermark_applicable(
         self,
         pdf: PdfSource,
         position: str | None = None,
     ) -> bool:
         return True
-    
 
     def read_secret(self, pdf, key: str) -> str:
         """Extract the secret if present and authenticated by ``key``.
@@ -139,7 +140,9 @@ class AddAfterEOF(WatermarkingMethod):
         if not (isinstance(payload, dict) and payload.get("v") == 1):
             raise SecretNotFoundError("Unsupported watermark version or format")
         if payload.get("alg") != "HMAC-SHA256":
-            raise WatermarkingError("Unsupported MAC algorithm: %r" % payload.get("alg"))
+            raise WatermarkingError(
+                "Unsupported MAC algorithm: %r" % payload.get("alg")
+            )
 
         try:
             mac_hex = str(payload["mac"])  # stored as hex string
@@ -179,4 +182,3 @@ class AddAfterEOF(WatermarkingMethod):
 
 
 __all__ = ["AddAfterEOF"]
-

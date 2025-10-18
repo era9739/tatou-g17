@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   server:
     build:
@@ -8,11 +6,11 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - ./server/keys:/app/server/keys:ro  # Read-only keys
+      - ./server/keys:/app/keys:ro
       - user-files:/app/storage
+      - ./server/logs:/app/logs
     environment:
       - PYTHONUNBUFFERED=1
-      # DB connection details for future use by the API
       - DB_HOST=db
       - DB_PORT=3306
       - DB_NAME=tatou
@@ -20,21 +18,22 @@ services:
       - DB_PASSWORD=${MARIADB_PASSWORD}
       - FLAG_2=${FLAG_2}
       - RMAP_BASE_PDF=/app/group_17_rmap.pdf
-      - RMAP_LINK_TTL=600
-      - RMAP_KEYS_DIR=/app/server/keys
+      - RMAP_KEYS_DIR=/app/keys
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
 
   db:
-    image: mariadb:11.4
+    image: mariadb:10.6
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     environment:
       - MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD}
       - MARIADB_DATABASE=tatou
       - MARIADB_USER=${MARIADB_USER}
       - MARIADB_PASSWORD=${MARIADB_PASSWORD}
+    ports:
+      - "3307:3306"   # use 3307 on host
     volumes:
       - db-data:/var/lib/mysql
       - ./db/tatou.sql:/docker-entrypoint-initdb.d/10-tatou.sql:ro
@@ -43,8 +42,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    ports:
-      - "3306:3306"
     restart: unless-stopped
 
   phpmyadmin:
@@ -52,15 +49,43 @@ services:
     environment:
       - PMA_HOST=db
       - PMA_PORT=3306
-      - UPLOAD_LIMIT=64M     # <-- use a unit and quote if using YAML key:value form
-      - MEMORY_LIMIT=256M
+      - PMA_USER=${MARIADB_USER}
+      - PMA_PASSWORD=${MARIADB_PASSWORD}
     ports:
       - "8080:80"
     depends_on:
       db:
         condition: service_healthy
+    platform: linux/amd64   # force amd64 for Mac M1/M2
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  # loki and promtail removed — using Prometheus + Grafana only
+
+  grafana:
+    image: grafana/grafana:9.5.0
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
     restart: unless-stopped
 
 volumes:
   db-data:
   user-files:
+  prometheus-data:
+  grafana-data:

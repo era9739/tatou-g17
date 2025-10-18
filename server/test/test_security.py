@@ -1,8 +1,6 @@
 """Security tests for CLI and file handling"""
 import pytest
-import sys
 import warnings
-from pathlib import Path
 from security_utils import (
     validate_file_path,
     validate_pdf_file,

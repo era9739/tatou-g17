@@ -84,4 +84,4 @@ echo "Starting Gunicorn..."
 echo "============================================"
 
 # --- Start the server ---
-exec gunicorn -b 0.0.0.0:5000 server:app
+exec gunicorn -b 0.0.0.0:5000 src.server:app

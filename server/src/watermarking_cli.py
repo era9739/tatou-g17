@@ -10,8 +10,6 @@ Usage:
 
 import argparse
 import sys
-from pathlib import Path
-from typing import Optional
 
 # Import watermarking utilities
 from watermarking_utils import (
@@ -19,7 +17,7 @@ from watermarking_utils import (
     apply_watermark,
     read_watermark,
     explore_pdf,
-    is_watermarking_applicable
+    is_watermarking_applicable,
 )
 
 # Import security utilities
@@ -29,7 +27,7 @@ from security_utils import (
     sanitize_method_name,
     validate_secret_length,
     warn_insecure_key_usage,
-    SecurityError
+    SecurityError,
 )
 
 
@@ -51,7 +49,7 @@ def _read_text_from_file(filepath: str) -> str:
     path = validate_file_path(filepath, must_exist=True, allow_write=False)
 
     try:
-        with path.open('r', encoding='utf-8') as f:
+        with path.open("r", encoding="utf-8") as f:
             content = f.read()
         return content
     except (OSError, PermissionError) as e:
@@ -86,17 +84,16 @@ def _resolve_secret(args: argparse.Namespace) -> str:
     """
     secret = None
 
-    if hasattr(args, 'secret') and args.secret is not None:
+    if hasattr(args, "secret") and args.secret is not None:
         secret = args.secret
-    elif hasattr(args, 'secret_file') and args.secret_file is not None:
+    elif hasattr(args, "secret_file") and args.secret_file is not None:
         secret = _read_text_from_file(args.secret_file).strip("\n\r")
-    elif hasattr(args, 'secret_stdin') and args.secret_stdin:
+    elif hasattr(args, "secret_stdin") and args.secret_stdin:
         secret = _read_text_from_stdin().strip("\n\r")
 
     if secret is None:
         raise ValueError(
-            "No secret provided. "
-            "Use -s, --secret-file, or --secret-stdin"
+            "No secret provided. " "Use -s, --secret-file, or --secret-stdin"
         )
 
     # Validate secret length
@@ -123,22 +120,22 @@ def _resolve_key(args: argparse.Namespace) -> str:
     """
     key = None
 
-    if hasattr(args, 'key') and args.key is not None:
+    if hasattr(args, "key") and args.key is not None:
         # Warn about insecure usage
         warn_insecure_key_usage()
         key = args.key
-    elif hasattr(args, 'key_file') and args.key_file is not None:
+    elif hasattr(args, "key_file") and args.key_file is not None:
         key = _read_text_from_file(args.key_file).strip("\n\r")
-    elif hasattr(args, 'key_stdin') and args.key_stdin:
+    elif hasattr(args, "key_stdin") and args.key_stdin:
         key = _read_text_from_stdin().strip("\n\r")
-    elif hasattr(args, 'key_prompt') and args.key_prompt:
+    elif hasattr(args, "key_prompt") and args.key_prompt:
         import getpass
+
         key = getpass.getpass("Enter encryption key: ")
 
     if key is None:
         raise ValueError(
-            "No key provided. "
-            "Use -k, --key-file, --key-stdin, or --key-prompt"
+            "No key provided. " "Use -k, --key-file, --key-stdin, or --key-prompt"
         )
 
     # Validate key length
@@ -190,9 +187,7 @@ def cmd_explore(args: argparse.Namespace) -> int:
         print("\nApplicable methods:")
         for method_name in METHODS.keys():
             applicable = is_watermarking_applicable(
-                method=method_name,
-                pdf=input_path,
-                position=None
+                method=method_name, pdf=input_path, position=None
             )
             status = "✓" if applicable else "✗"
             print(f"  {status} {method_name}")
@@ -223,7 +218,9 @@ def cmd_embed(args: argparse.Namespace) -> int:
 
         # Validate paths
         input_path = validate_file_path(args.input, must_exist=True, allow_write=False)
-        output_path = validate_file_path(args.output, must_exist=False, allow_write=True)
+        output_path = validate_file_path(
+            args.output, must_exist=False, allow_write=True
+        )
 
         # Validate input is a PDF
         validate_pdf_file(input_path, max_size_mb=100)
@@ -233,17 +230,15 @@ def cmd_embed(args: argparse.Namespace) -> int:
         secret = _resolve_secret(args)
 
         # Get position if specified
-        position = args.position if hasattr(args, 'position') else None
+        position = args.position if hasattr(args, "position") else None
 
         # Check if method is applicable
         if not is_watermarking_applicable(
-            method=method,
-            pdf=input_path,
-            position=position
+            method=method, pdf=input_path, position=position
         ):
             print(
                 f"Error: Method '{method}' is not applicable to this PDF",
-                file=sys.stderr
+                file=sys.stderr,
             )
             return 1
 
@@ -251,11 +246,7 @@ def cmd_embed(args: argparse.Namespace) -> int:
 
         # Apply watermark
         watermarked = apply_watermark(
-            method=method,
-            pdf=input_path,
-            secret=secret,
-            key=key,
-            position=position
+            method=method, pdf=input_path, secret=secret, key=key, position=position
         )
 
         # Write output safely
@@ -270,6 +261,7 @@ def cmd_embed(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"Unexpected error: {e}", file=sys.stderr)
         import traceback
+
         traceback.print_exc()
         return 1
 
@@ -300,11 +292,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
         print(f"Extracting watermark using method: {method}")
 
         # Read watermark
-        secret = read_watermark(
-            method=method,
-            pdf=input_path,
-            key=key
-        )
+        secret = read_watermark(method=method, pdf=input_path, key=key)
 
         print(f"Extracted secret: {secret}")
         return 0
@@ -326,40 +314,58 @@ def _build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         description="PDF Watermarking CLI",
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
-    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # Methods command
-    subparsers.add_parser('methods', help='List available watermarking methods')
+    subparsers.add_parser("methods", help="List available watermarking methods")
 
     # Explore command
-    explore_parser = subparsers.add_parser('explore', help='Explore PDF structure')
-    explore_parser.add_argument('input', help='Input PDF file')
+    explore_parser = subparsers.add_parser("explore", help="Explore PDF structure")
+    explore_parser.add_argument("input", help="Input PDF file")
 
     # Embed command
-    embed_parser = subparsers.add_parser('embed', help='Embed watermark')
-    embed_parser.add_argument('input', help='Input PDF file')
-    embed_parser.add_argument('output', help='Output PDF file')
-    embed_parser.add_argument('-m', '--method', required=True, help='Watermarking method')
-    embed_parser.add_argument('-s', '--secret', help='Secret to embed')
-    embed_parser.add_argument('--secret-file', help='Read secret from file (secure)')
-    embed_parser.add_argument('--secret-stdin', action='store_true', help='Read secret from stdin')
-    embed_parser.add_argument('-k', '--key', help='Encryption key (WARNING: visible in ps)')
-    embed_parser.add_argument('--key-file', help='Read key from file (secure)')
-    embed_parser.add_argument('--key-stdin', action='store_true', help='Read key from stdin')
-    embed_parser.add_argument('--key-prompt', action='store_true', help='Prompt for key')
-    embed_parser.add_argument('-p', '--position', help='Position for watermark')
+    embed_parser = subparsers.add_parser("embed", help="Embed watermark")
+    embed_parser.add_argument("input", help="Input PDF file")
+    embed_parser.add_argument("output", help="Output PDF file")
+    embed_parser.add_argument(
+        "-m", "--method", required=True, help="Watermarking method"
+    )
+    embed_parser.add_argument("-s", "--secret", help="Secret to embed")
+    embed_parser.add_argument("--secret-file", help="Read secret from file (secure)")
+    embed_parser.add_argument(
+        "--secret-stdin", action="store_true", help="Read secret from stdin"
+    )
+    embed_parser.add_argument(
+        "-k", "--key", help="Encryption key (WARNING: visible in ps)"
+    )
+    embed_parser.add_argument("--key-file", help="Read key from file (secure)")
+    embed_parser.add_argument(
+        "--key-stdin", action="store_true", help="Read key from stdin"
+    )
+    embed_parser.add_argument(
+        "--key-prompt", action="store_true", help="Prompt for key"
+    )
+    embed_parser.add_argument("-p", "--position", help="Position for watermark")
 
     # Extract command
-    extract_parser = subparsers.add_parser('extract', help='Extract watermark')
-    extract_parser.add_argument('input', help='Input PDF file')
-    extract_parser.add_argument('-m', '--method', required=True, help='Watermarking method')
-    extract_parser.add_argument('-k', '--key', help='Encryption key (WARNING: visible in ps)')
-    extract_parser.add_argument('--key-file', help='Read key from file (secure)')
-    extract_parser.add_argument('--key-stdin', action='store_true', help='Read key from stdin')
-    extract_parser.add_argument('--key-prompt', action='store_true', help='Prompt for key')
+    extract_parser = subparsers.add_parser("extract", help="Extract watermark")
+    extract_parser.add_argument("input", help="Input PDF file")
+    extract_parser.add_argument(
+        "-m", "--method", required=True, help="Watermarking method"
+    )
+    extract_parser.add_argument(
+        "-k", "--key", help="Encryption key (WARNING: visible in ps)"
+    )
+    extract_parser.add_argument("--key-file", help="Read key from file (secure)")
+    extract_parser.add_argument(
+        "--key-stdin", action="store_true", help="Read key from stdin"
+    )
+    extract_parser.add_argument(
+        "--key-prompt", action="store_true", help="Prompt for key"
+    )
 
     return parser
 
@@ -382,18 +388,18 @@ def main(argv=None) -> int:
         return 1
 
     # Route to appropriate command handler
-    if args.command == 'methods':
+    if args.command == "methods":
         return cmd_methods(args)
-    elif args.command == 'explore':
+    elif args.command == "explore":
         return cmd_explore(args)
-    elif args.command == 'embed':
+    elif args.command == "embed":
         return cmd_embed(args)
-    elif args.command == 'extract':
+    elif args.command == "extract":
         return cmd_extract(args)
     else:
         print(f"Unknown command: {args.command}", file=sys.stderr)
         return 1
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

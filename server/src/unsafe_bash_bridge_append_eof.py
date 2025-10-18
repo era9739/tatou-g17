@@ -5,6 +5,7 @@ PDF's final EOF marker but by calling a bash command. Technically you could brid
 any watermarking implementation this way. Don't, unless you know how to sanitize user inputs.
 
 """
+
 from __future__ import annotations
 
 from typing import Final
@@ -17,9 +18,7 @@ from watermarking_method import (
 
 
 class UnsafeBashBridgeAppendEOF(WatermarkingMethod):
-    """Toy method that appends a watermark record after the PDF EOF.
-
-    """
+    """Toy method that appends a watermark record after the PDF EOF."""
 
     name: Final[str] = "bash-bridge-eof"
 
@@ -46,7 +45,7 @@ class UnsafeBashBridgeAppendEOF(WatermarkingMethod):
         if not data.endswith(b"\n"):
             data += b"\n"
 
-        return data + secret.encode('utf-8')
+        return data + secret.encode("utf-8")
 
         # UNSAFE ALTERNATIVE (commented out - demonstrates vulnerability):
         # If you were to do this, it would be vulnerable to command injection:
@@ -61,7 +60,6 @@ class UnsafeBashBridgeAppendEOF(WatermarkingMethod):
         position: str | None = None,
     ) -> bool:
         return True
-
 
     def read_secret(self, pdf, key: str) -> str:
         """Extract the secret if present.
@@ -78,7 +76,7 @@ class UnsafeBashBridgeAppendEOF(WatermarkingMethod):
             raise SecretNotFoundError("No %%EOF marker found in PDF")
 
         # Get everything after %%EOF
-        after_eof = data[idx + len(eof_marker):]
+        after_eof = data[idx + len(eof_marker) :]
 
         # Strip newlines at the beginning (the one after %%EOF)
         secret = after_eof.lstrip(b"\n").rstrip(b"\n\r\t ")
@@ -91,7 +89,7 @@ class UnsafeBashBridgeAppendEOF(WatermarkingMethod):
         # cmd = f"tail -c +{idx + len(eof_marker) + 1} '{pdf.resolve()}'"
         # subprocess.run(cmd, shell=True, ...)  # Path injection possible!
 
-        return secret.decode('utf-8', errors='ignore')
+        return secret.decode("utf-8", errors="ignore")
 
 
 __all__ = ["UnsafeBashBridgeAppendEOF"]

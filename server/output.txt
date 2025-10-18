@@ -1,0 +1,55 @@
+.................F.........F............................................ [ 38%]
+........................................................................ [ 76%]
+............................................                             [100%]
+=================================== FAILURES ===================================
+____________________ TestUserManagement.test_login_success _____________________
+
+self = <test_api_endpoints.TestUserManagement object at 0x102ffc200>
+client = <FlaskClient <Flask 'server'>>
+unique_user_data = {'email': 'test_780a1e09@example.com', 'login': 'testuser_780a1e09', 'password': 'testpass123'}
+
+    def test_login_success(self, client, unique_user_data):
+        # Create user first
+        client.post('/api/create-user', json=unique_user_data)
+    
+        # Login
+        response = client.post('/api/login', json={
+            "email": unique_user_data["email"],
+            "password": unique_user_data["password"]
+        })
+        assert response.status_code == 200
+        data = response.json
+    
+        # Validate all required fields exist
+        assert "token" in data
+        assert "token_type" in data
+>       assert "expires_in" in data
+E       AssertionError: assert 'expires_in' in {'token': '.eJyrVirNTFGyMtRRyslPz8xTslIqSS0uKS1OLYo3tzBINEw1sFTSUUrNTczMgcrBxR1SKxJzC3JS9ZLzc5VqAVbPF3s.aPNlzQ.A_yqIm3qBaFKB64yNxEgQam5_cQ', 'token_type': 'bearer'}
+
+test/test_api_endpoints.py:220: AssertionError
+----------------------------- Captured stderr call -----------------------------
+2025-10-18 12:02:53,292 - INFO - user-created user=testuser_780a1e09 ip=127.0.0.1 status=OK extra={}
+2025-10-18 12:02:53,293 - INFO - {"event": "user-created", "user": "testuser_780a1e09", "ip": "127.0.0.1", "status": "OK"}
+2025-10-18 12:02:53,361 - INFO - login-success user=test_780a1e09@example.com ip=127.0.0.1 status=OK extra={}
+2025-10-18 12:02:53,361 - INFO - {"event": "login-success", "user": "test_780a1e09@example.com", "ip": "127.0.0.1", "status": "OK"}
+------------------------------ Captured log call -------------------------------
+INFO     tatou-security:server.py:108 user-created user=testuser_780a1e09 ip=127.0.0.1 status=OK extra={}
+INFO     tatou-security:server.py:111 {"event": "user-created", "user": "testuser_780a1e09", "ip": "127.0.0.1", "status": "OK"}
+INFO     tatou-security:server.py:108 login-success user=test_780a1e09@example.com ip=127.0.0.1 status=OK extra={}
+INFO     tatou-security:server.py:111 {"event": "login-success", "user": "test_780a1e09@example.com", "ip": "127.0.0.1", "status": "OK"}
+______________ TestWatermarkingAPI.test_get_watermarking_methods _______________
+
+self = <test_api_endpoints.TestWatermarkingAPI object at 0x102ffd640>
+client = <FlaskClient <Flask 'server'>>
+
+    def test_get_watermarking_methods(self, client):
+        response = client.get('/api/get-watermarking-methods')
+>       assert response.status_code == 200
+E       assert 404 == 200
+E        +  where 404 = <WrapperTestResponse streamed [404 NOT FOUND]>.status_code
+
+test/test_api_endpoints.py:348: AssertionError
+=========================== short test summary info ============================
+FAILED test/test_api_endpoints.py::TestUserManagement::test_login_success - A...
+FAILED test/test_api_endpoints.py::TestWatermarkingAPI::test_get_watermarking_methods
+

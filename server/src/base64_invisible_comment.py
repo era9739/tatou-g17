@@ -18,6 +18,7 @@ from watermarking_method import (
     SecretNotFoundError,
 )
 
+
 class Base64InvisibleComment(WatermarkingMethod):
     """Watermarking method that appends a base64-encoded secret after EOF."""
 
@@ -28,7 +29,9 @@ class Base64InvisibleComment(WatermarkingMethod):
     def get_usage() -> str:
         return "Appends base64-encoded secret after EOF. Key/position ignored. Lightly obfuscated."
 
-    def add_watermark(self, pdf, secret: str, key: str, position: str | None = None) -> bytes:
+    def add_watermark(
+        self, pdf, secret: str, key: str, position: str | None = None
+    ) -> bytes:
         """Embed base64-encoded secret after EOF marker."""
         if not secret:
             raise ValueError("Secret must be non-empty")
@@ -71,5 +74,6 @@ class Base64InvisibleComment(WatermarkingMethod):
             return decoded.decode("utf-8")
         except Exception as e:
             raise SecretNotFoundError("Malformed base64 watermark") from e
+
 
 __all__ = ["Base64InvisibleComment"]

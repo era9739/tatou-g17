@@ -5,6 +5,7 @@ from watermarking_method import (
     SecretNotFoundError,
 )
 
+
 class PdfObjectStreamEmbedder(WatermarkingMethod):
 
     name = "pdf-object-stream-embedder"
@@ -14,16 +15,22 @@ class PdfObjectStreamEmbedder(WatermarkingMethod):
     def get_usage() -> str:
         return "Embeds secret in a compressed, unreferenced object stream near EOF. Key/position ignored."
 
-    def add_watermark(self, pdf, secret: str, key: str, position: str | None = None) -> bytes:
+    def add_watermark(
+        self, pdf, secret: str, key: str, position: str | None = None
+    ) -> bytes:
         if not secret:
             raise ValueError("Secret must be non-empty")
         data = load_pdf_bytes(pdf)
         compressed = zlib.compress(secret.encode("utf-8"))
         stream = (
-            f"\n{self._OBJ_ID} 0 obj\n"
-            f"<< /Length {len(compressed)} >>\n"
-            f"stream\n"
-        ).encode("utf-8") + compressed + b"\nendstream\nendobj\n"
+            (
+                f"\n{self._OBJ_ID} 0 obj\n"
+                f"<< /Length {len(compressed)} >>\n"
+                f"stream\n"
+            ).encode("utf-8")
+            + compressed
+            + b"\nendstream\nendobj\n"
+        )
         return data + stream
 
     def is_watermark_applicable(self, pdf, position: str | None = None) -> bool:

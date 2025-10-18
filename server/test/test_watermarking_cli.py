@@ -1,6 +1,5 @@
 """Tests for watermarking CLI tool"""
 import pytest
-from pathlib import Path
 from watermarking_cli import _read_text_from_file
 from security_utils import SecurityError
 

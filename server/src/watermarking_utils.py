@@ -26,14 +26,11 @@ To enable the richer exploration, install PyMuPDF:
     pip install pymupdf
 
 """
+
 from __future__ import annotations
 
-from typing import Any, Dict, Final, Iterable, List, Mapping
-import base64
+from typing import Any, Dict, Final, List
 import hashlib
-import io
-import json
-import os
 import re
 
 from watermarking_method import (
@@ -48,11 +45,6 @@ from base64_invisible_comment import Base64InvisibleComment
 from pdf_object_stream_embedder import PdfObjectStreamEmbedder
 
 
-
-
-
-
-
 # --------------------
 # Method registry
 # --------------------
@@ -64,8 +56,6 @@ METHODS: Dict[str, WatermarkingMethod] = {
     WhitespaceSteganography.name: WhitespaceSteganography(),
     Base64InvisibleComment.name: Base64InvisibleComment(),
     PdfObjectStreamEmbedder.name: PdfObjectStreamEmbedder(),
-
-
 }
 """Registry of available watermarking methods.
 
@@ -102,6 +92,7 @@ def get_method(method: str | WatermarkingMethod) -> WatermarkingMethod:
 # Public API helpers
 # --------------------
 
+
 def apply_watermark(
     method: str | WatermarkingMethod,
     pdf: PdfSource,
@@ -112,6 +103,7 @@ def apply_watermark(
     """Apply a watermark using the specified method and return new PDF bytes."""
     m = get_method(method)
     return m.add_watermark(pdf=pdf, secret=secret, key=key, position=position)
+
 
 def is_watermarking_applicable(
     method: str | WatermarkingMethod,
@@ -134,9 +126,7 @@ def read_watermark(method: str | WatermarkingMethod, pdf: PdfSource, key: str) -
 # --------------------
 
 # Pre-compiled regex for the fallback parser (very permissive):
-_OBJ_RE: Final[re.Pattern[bytes]] = re.compile(
-    rb"(?m)^(\d+)\s+(\d+)\s+obj\b"
-)
+_OBJ_RE: Final[re.Pattern[bytes]] = re.compile(rb"(?m)^(\d+)\s+(\d+)\s+obj\b")
 _ENDOBJ_RE: Final[re.Pattern[bytes]] = re.compile(rb"\bendobj\b")
 _TYPE_RE: Final[re.Pattern[bytes]] = re.compile(rb"/Type\s*/([A-Za-z]+)")
 
@@ -262,6 +252,5 @@ __all__ = [
     "apply_watermark",
     "read_watermark",
     "explore_pdf",
-    "is_watermarking_applicable"
+    "is_watermarking_applicable",
 ]
-

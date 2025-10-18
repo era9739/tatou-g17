@@ -87,11 +87,13 @@ try:
     _PROM_AVAILABLE = True
     _EVENT_COUNTER = Counter("tatou_events_total", "Count of tatou events", ["event"])
 
+
     def _metrics_increment(ev: str):
         try:
             _EVENT_COUNTER.labels(event=ev).inc()
         except Exception:
             pass
+
 
     def _metrics_dump():
         return generate_latest()
@@ -99,8 +101,10 @@ try:
 except Exception:
     _PROM_AVAILABLE = False
 
+
     def _metrics_increment(ev: str):
         _METRICS[ev] = _METRICS.get(ev, 0) + 1
+
 
     def _metrics_dump():
         # simple text format
@@ -149,7 +153,7 @@ def create_app():
     # --- Simple rate limiter (in-process) ---
     class RateLimiter:
         def __init__(
-            self, max_calls: int, period_seconds: int, ban_seconds: int = 3600
+                self, max_calls: int, period_seconds: int, ban_seconds: int = 3600
         ):
             self.max_calls = max_calls
             self.period = period_seconds
@@ -224,6 +228,7 @@ def create_app():
                 return _auth_error("Invalid token")
             g.user = {"id": int(data["uid"]), "login": data["login"], "email": data.get("email")}
             return f(*args, **kwargs)
+
         return wrapper
 
     # --- File access helper for endpoints ---
@@ -258,7 +263,7 @@ def create_app():
                 status="FAIL",
                 details=str(exc),
             )
-            raise
+            raise SecError(f"invalid path: {exc}")
         app.logger.info(
             f"Resolved file access for user={user} path={resolved} from {request.remote_addr}"
         )
@@ -393,7 +398,11 @@ def create_app():
         storage_name = f"{uuid.uuid4().hex}-{filename}"
         try:
             dest = resolve_and_log_file_access(storage_name, user=g.user["login"])
-        except Exception:
+        except SecError as e:
+            app.logger.warning(f"File access denied for user={g.user['login']}: {e}")
+            return jsonify({"error": "invalid file path"}), 400
+        except Exception as e:
+            app.logger.error(f"Unexpected error resolving path for user={g.user['login']}: {e}")
             return jsonify({"error": "invalid file path"}), 400
 
         # Save to storage and validate
@@ -401,11 +410,8 @@ def create_app():
             file.save(dest)
             validate_pdf_file(dest)
             size = dest.stat().st_size
-            # Compute raw 32-byte digest for storage (BINARY(32) column)
-            with dest.open("rb") as fh:
-                body = fh.read()
-                sha_raw = hashlib.sha256(body).digest()
-                sha_hex = hashlib.sha256(body).hexdigest()
+            # Compute SHA256 as hex string
+            sha_hex = _sha256_file(dest)
         except Exception as e:
             # cleanup if something went wrong
             try:
@@ -415,29 +421,44 @@ def create_app():
             app.logger.error(f"Upload failed for user={g.user['login']}: {e}")
             return jsonify({"error": f"upload failed: {e}"}), 400
 
-        # Register in DB
+        # Register in DB using UNHEX to store as binary
         try:
             with get_engine().begin() as conn:
                 res = conn.execute(
-                    text(
-                        "INSERT INTO Documents (name, path, ownerid, sha256, size) VALUES (:name, :path, :uid, :sha, :size)"
-                    ),
+                    text("""
+                        INSERT INTO Documents (name, path, ownerid, sha256, size)
+                        VALUES (:name, :path, :ownerid, UNHEX(:sha256hex), :size)
+                    """),
                     {
                         "name": name,
                         "path": str(dest),
-                        "uid": g.user["id"],
-                        "sha": sha_raw,
+                        "ownerid": int(g.user["id"]),
+                        "sha256hex": sha_hex,
                         "size": int(size),
                     },
                 )
                 doc_id = int(res.lastrowid)
+                # Fetch back with HEX conversion
+                row = conn.execute(
+                    text("""
+                        SELECT id, name, creation, HEX(sha256) AS sha256_hex, size
+                        FROM Documents
+                        WHERE id = :id
+                    """),
+                    {"id": doc_id},
+                ).one()
         except Exception as e:
             app.logger.error(f"DB error registering upload: {e}")
             return jsonify({"error": "database error"}), 500
 
         log_event("upload-document", user=g.user["login"], status="OK", id=doc_id)
-        # Return hex string to clients (more convenient than raw bytes)
-        return jsonify({"id": doc_id, "name": name, "sha256": sha_hex, "size": int(size)}), 201
+        return jsonify({
+            "id": int(row.id),
+            "name": row.name,
+            "creation": row.creation.isoformat() if hasattr(row.creation, "isoformat") else str(row.creation),
+            "sha256": row.sha256_hex,
+            "size": int(row.size),
+        }), 201
 
     # GET /api/list-documents (authenticated)
     @app.get("/api/list-documents")
@@ -446,27 +467,28 @@ def create_app():
         try:
             with get_engine().connect() as conn:
                 rows = conn.execute(
-                    text(
-                        "SELECT id, name, creation, sha256, size FROM Documents WHERE ownerid = :uid ORDER BY id DESC"
-                    ),
-                    {"uid": g.user["id"]},
+                    text("""
+                        SELECT id, name, creation, HEX(sha256) AS sha256_hex, size
+                        FROM Documents
+                        WHERE ownerid = :uid
+                        ORDER BY creation DESC
+                    """),
+                    {"uid": int(g.user["id"])},
                 ).all()
-            docs = [
-                {
-                    "id": int(r.id),
-                    "name": r.name,
-                    "creation": r.creation,
-                    "sha256": r.sha256,
-                    "size": int(r.size),
-                }
-                for r in rows
-            ]
-            return jsonify({"documents": docs}), 200
         except Exception as e:
             app.logger.error(
                 f"DB error listing documents for user={g.user['login']}: {e}"
             )
             return jsonify({"error": "database error"}), 503
+
+        docs = [{
+            "id": int(r.id),
+            "name": r.name,
+            "creation": r.creation.isoformat() if hasattr(r.creation, "isoformat") else str(r.creation),
+            "sha256": r.sha256_hex,
+            "size": int(r.size),
+        } for r in rows]
+        return jsonify({"documents": docs}), 200
 
     # GET /api/get-document/<int:document_id>
     @app.get("/api/get-document/<int:document_id>")
@@ -499,7 +521,11 @@ def create_app():
         # Resolve path under storage
         try:
             resolved = resolve_and_log_file_access(str(row.path), user=g.user["login"])
-        except Exception:
+        except SecError as e:
+            app.logger.warning(f"File access denied for user={g.user['login']}: {e}")
+            return jsonify({"error": "invalid file path"}), 400
+        except Exception as e:
+            app.logger.error(f"Unexpected error resolving path: {e}")
             return jsonify({"error": "invalid file path"}), 400
 
         try:
@@ -513,24 +539,6 @@ def create_app():
             app.logger.error(f"Failed to send document {document_id}: {e}")
             return jsonify({"error": "could not send file"}), 500
 
-    # Helper: resolve path safely under STORAGE_DIR (handles absolute/relative)
-    def _safe_resolve_under_storage(p: str, storage_root: Path) -> Path:
-        storage_root = storage_root.resolve()
-        fp = Path(p)
-        if not fp.is_absolute():
-            fp = storage_root / fp
-        fp = fp.resolve()
-        # Python 3.12 has is_relative_to on Path
-        if hasattr(fp, "is_relative_to"):
-            if not fp.is_relative_to(storage_root):
-                raise RuntimeError(f"path {fp} escapes storage root {storage_root}")
-        else:
-            try:
-                fp.relative_to(storage_root)
-            except ValueError:
-                raise RuntimeError(f"path {fp} escapes storage root {storage_root}")
-        return fp
-
     # DELETE /api/delete-document  (and variants)
     @app.route("/api/delete-document", methods=["DELETE", "POST"])
     @app.route("/api/delete-document/<document_id>", methods=["DELETE"])
@@ -539,9 +547,9 @@ def create_app():
         # accept id from path, query (?id= / ?documentid=), or JSON body on POST
         if not document_id:
             document_id = (
-                request.args.get("id")
-                or request.args.get("documentid")
-                or (request.is_json and (request.get_json(silent=True) or {}).get("id"))
+                    request.args.get("id")
+                    or request.args.get("documentid")
+                    or (request.is_json and (request.get_json(silent=True) or {}).get("id"))
             )
         if not document_id or not str(document_id).isdigit():
             # Monitoring: invalid document id provided
@@ -622,7 +630,11 @@ def create_app():
         # Resolve and serve the file (no auth: versions are public by design)
         try:
             resolved = resolve_and_log_file_access(str(row.path), user=None)
-        except Exception:
+        except SecError as e:
+            app.logger.warning(f"File access denied for version link={link}: {e}")
+            return jsonify({"error": "invalid file path"}), 400
+        except Exception as e:
+            app.logger.error(f"Unexpected error resolving path for version: {e}")
             return jsonify({"error": "invalid file path"}), 400
 
         try:
@@ -674,9 +686,9 @@ def create_app():
     def create_watermark(document_id: int | None = None):
         if not document_id:
             document_id = (
-                request.args.get("id")
-                or request.args.get("documentid")
-                or (request.is_json and (request.get_json(silent=True) or {}).get("id"))
+                    request.args.get("id")
+                    or request.args.get("documentid")
+                    or (request.is_json and (request.get_json(silent=True) or {}).get("id"))
             )
         try:
             doc_id = int(document_id)
@@ -788,9 +800,9 @@ def create_app():
     def read_watermark(document_id: int | None = None):
         if not document_id:
             document_id = (
-                request.args.get("id")
-                or request.args.get("documentid")
-                or (request.is_json and (request.get_json(silent=True) or {}).get("id"))
+                    request.args.get("id")
+                    or request.args.get("documentid")
+                    or (request.is_json and (request.get_json(silent=True) or {}).get("id"))
             )
         try:
             doc_id = int(document_id)
@@ -892,7 +904,7 @@ def create_app():
                     text("SELECT id FROM Documents WHERE name = :name"),
                     {"name": "RMAP Base Document"}
                 ).first()
-                
+
                 if existing:
                     app.logger.info("RMAP base document already exists in database")
                     return
@@ -1092,6 +1104,7 @@ def create_app():
             app.logger.error(f"Failed to initialize RMAP base PDF: {e}")
 
     return app
+
 
 # WSGI entrypoint
 app = create_app()

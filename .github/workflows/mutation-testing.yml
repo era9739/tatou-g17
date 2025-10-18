@@ -27,8 +27,7 @@ jobs:
         working-directory: server
         run: |
           mutmut run || true
-          mutmut results
-          mutmut junitxml > mutation-results.xml
+          mutmut results --format junitxml > mutation-results.xml
 
       - name: Upload results
         uses: actions/upload-artifact@v4

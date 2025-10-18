@@ -10,7 +10,10 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates openssh-client \
  && rm -rf /var/lib/apt/lists/*
 
-# Copy project description, to instal dependencies
+# ✅ Create logs directory inside container
+RUN mkdir -p /app/logs
+
+# Copy project description, to install dependencies
 COPY pyproject.toml /app/pyproject.toml
 
 # Install runtime dependencies
@@ -27,4 +30,3 @@ EXPOSE 5000
 
 # Default command runs the web server
 CMD ["./entrypoint.sh"]
-

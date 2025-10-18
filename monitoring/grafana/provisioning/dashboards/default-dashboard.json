@@ -1,0 +1,28 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "Tatou Overview",
+    "panels": [
+      {
+        "type": "graph",
+        "title": "Tatou Events (metric)",
+        "targets": [
+          {
+            "expr": "tatou_events_total",
+            "format": "time_series",
+            "legendFormat": "{{event}}"
+          }
+        ]
+      },
+      {
+        "type": "logs",
+        "title": "Security JSON Logs (Loki)",
+        "targets": [
+          {
+            "expr": "{job=\"tatou\"}"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,10 +1,14 @@
 import os
+import io
+import hashlib
+import datetime as dt
 from pathlib import Path
 from functools import wraps
-from flask import Flask, jsonify, request, g, redirect
+from flask import Flask, jsonify, request, g, send_file, url_for, abort
+from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 import pickle as _std_pickle
 
@@ -13,18 +17,20 @@ try:
 except Exception:
     _pickle = _std_pickle
 
-# --- JSON Logging and Metrics Setup ---
-import json as _json
-from datetime import datetime as _dt
+import watermarking_utils as WMUtils
+from watermarking_method import WatermarkingMethod
+import time
+from rmap.identity_manager import IdentityManager
+from rmap.rmap import RMAP
 
 # --- Security Logging Setup ---
 import logging
+import json as _json
+from datetime import datetime as _dt
 from logging.handlers import RotatingFileHandler
 from security_utils import safe_resolve_under_storage, SecurityError as SecError
 from security_utils import validate_pdf_file
-from werkzeug.utils import secure_filename
 import uuid
-import time
 from collections import defaultdict, deque
 
 logger = logging.getLogger("tatou-security")
@@ -72,6 +78,7 @@ try:
 except Exception:
     # best-effort: if path unwritable (e.g., in tests), ignore
     pass
+
 # Prometheus metrics (optional)
 _METRICS = {}
 try:
@@ -128,9 +135,7 @@ def create_app():
 
     # --- Config ---
     app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "ehmgr17key")
-    app.config["STORAGE_DIR"] = Path(
-        os.environ.get("STORAGE_DIR", "./storage")
-    ).resolve()
+    app.config["STORAGE_DIR"] = Path(os.environ.get("STORAGE_DIR", "./storage")).resolve()
     app.config["TOKEN_TTL_SECONDS"] = int(os.environ.get("TOKEN_TTL_SECONDS", "86400"))
 
     app.config["DB_USER"] = os.environ.get("DB_USER", "tatou")
@@ -141,28 +146,53 @@ def create_app():
 
     app.config["STORAGE_DIR"].mkdir(parents=True, exist_ok=True)
 
-    # --- DB engine ---
+    # --- Simple rate limiter (in-process) ---
+    class RateLimiter:
+        def __init__(
+            self, max_calls: int, period_seconds: int, ban_seconds: int = 3600
+        ):
+            self.max_calls = max_calls
+            self.period = period_seconds
+            self.ban = ban_seconds
+            self.calls = defaultdict(lambda: deque())
+            self.banned_until = {}
+
+        def is_allowed(self, key: str) -> bool:
+            now = time.time()
+            # check ban
+            if key in self.banned_until and now < self.banned_until[key]:
+                return False
+            dq = self.calls[key]
+            # evict old
+            while dq and dq[0] <= now - self.period:
+                dq.popleft()
+            if len(dq) >= self.max_calls:
+                # enforce ban
+                self.banned_until[key] = now + self.ban
+                dq.clear()
+                return False
+            dq.append(now)
+            return True
+
+    # instantiate limiters
+    _login_limiter = RateLimiter(max_calls=5, period_seconds=300, ban_seconds=3600)
+    _file_access_limiter = RateLimiter(max_calls=20, period_seconds=60, ban_seconds=600)
+
+    # --- DB engine only (no Table metadata) ---
     def db_url() -> str:
         return (
             f"mysql+pymysql://{app.config['DB_USER']}:{app.config['DB_PASSWORD']}"
-            f"@{app.config['DB_HOST']}:{app.config['DB_PORT']}/{app.config['DB_NAME']}?charset=utf8mb4&ssl=false"
+            f"@{app.config['DB_HOST']}:{app.config['DB_PORT']}/{app.config['DB_NAME']}?charset=utf8mb4"
         )
 
     def get_engine():
         eng = app.config.get("_ENGINE")
         if eng is None:
-            from sqlalchemy import create_engine
-
-            eng = create_engine(
-                db_url(),
-                pool_pre_ping=True,
-                future=True,
-                connect_args={"ssl": False},  # 👈 disable SSL properly
-            )
+            eng = create_engine(db_url(), pool_pre_ping=True, future=True)
             app.config["_ENGINE"] = eng
         return eng
 
-    # --- Auth helper ---
+    # --- Helpers ---
     def _serializer():
         return URLSafeTimedSerializer(app.config["SECRET_KEY"], salt="tatou-auth")
 
@@ -187,20 +217,13 @@ def create_app():
                 return _auth_error("Missing or invalid Authorization header")
             token = auth.split(" ", 1)[1].strip()
             try:
-                data = _serializer().loads(
-                    token, max_age=app.config["TOKEN_TTL_SECONDS"]
-                )
+                data = _serializer().loads(token, max_age=app.config["TOKEN_TTL_SECONDS"])
             except SignatureExpired:
                 return _auth_error("Token expired")
             except BadSignature:
                 return _auth_error("Invalid token")
-            g.user = {
-                "id": int(data["uid"]),
-                "login": data["login"],
-                "email": data.get("email"),
-            }
+            g.user = {"id": int(data["uid"]), "login": data["login"], "email": data.get("email")}
             return f(*args, **kwargs)
-
         return wrapper
 
     # --- File access helper for endpoints ---
@@ -241,40 +264,42 @@ def create_app():
         )
         return resolved
 
-    # --- Simple rate limiter (in-process) ---
-    class RateLimiter:
-        def __init__(
-            self, max_calls: int, period_seconds: int, ban_seconds: int = 3600
-        ):
-            self.max_calls = max_calls
-            self.period = period_seconds
-            self.ban = ban_seconds
-            self.calls = defaultdict(lambda: deque())
-            self.banned_until = {}
+    def _sha256_file(path: Path) -> str:
+        h = hashlib.sha256()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
 
-        def is_allowed(self, key: str) -> bool:
-            now = time.time()
-            # check ban
-            if key in self.banned_until and now < self.banned_until[key]:
-                return False
-            dq = self.calls[key]
-            # evict old
-            while dq and dq[0] <= now - self.period:
-                dq.popleft()
-            if len(dq) >= self.max_calls:
-                # enforce ban
-                self.banned_until[key] = now + self.ban
-                dq.clear()
-                return False
-            dq.append(now)
-            return True
+    # --- Routes ---
 
-    # instantiate limiters
-    _login_limiter = RateLimiter(max_calls=5, period_seconds=300, ban_seconds=3600)
-    _file_access_limiter = RateLimiter(max_calls=20, period_seconds=60, ban_seconds=600)
+    @app.route("/<path:filename>")
+    def static_files(filename):
+        return app.send_static_file(filename)
 
-    # ================= Routes =================
+    @app.route("/")
+    def home():
+        return app.send_static_file("index.html")
 
+    @app.get("/healthz")
+    def healthz():
+        try:
+            with get_engine().connect() as conn:
+                conn.execute(text("SELECT 1"))
+            db_ok = True
+        except Exception:
+            db_ok = False
+        return jsonify({"message": "The server is up and running.", "db_connected": db_ok}), 200
+
+    @app.get("/metrics")
+    def metrics():
+        try:
+            data = _metrics_dump()
+            return (data, 200, {"Content-Type": "text/plain; version=0.0.4"})
+        except Exception as e:
+            return (str(e), 500)
+
+    # POST /api/create-user {email, login, password}
     @app.post("/api/create-user")
     def create_user():
         payload = request.get_json(silent=True) or {}
@@ -289,19 +314,24 @@ def create_app():
         try:
             with get_engine().begin() as conn:
                 res = conn.execute(
-                    text(
-                        "INSERT INTO Users (email, hpassword, login) VALUES (:email, :hpw, :login)"
-                    ),
+                    text("INSERT INTO Users (email, hpassword, login) VALUES (:email, :hpw, :login)"),
                     {"email": email, "hpw": hpw, "login": login},
                 )
                 uid = int(res.lastrowid)
+                row = conn.execute(
+                    text("SELECT id, email, login FROM Users WHERE id = :id"),
+                    {"id": uid},
+                ).one()
         except IntegrityError:
             log_event("user-create-fail", user=login, status="DUPLICATE")
             return jsonify({"error": "email or login already exists"}), 409
+        except Exception as e:
+            return jsonify({"error": f"database error: {str(e)}"}), 503
 
         log_event("user-created", user=login, status="OK")
-        return jsonify({"id": uid, "email": email, "login": login}), 201
+        return jsonify({"id": row.id, "email": row.email, "login": row.login}), 201
 
+    # POST /api/login {login, password}
     @app.post("/api/login")
     def login():
         payload = request.get_json(silent=True) or {}
@@ -324,9 +354,7 @@ def create_app():
         try:
             with get_engine().connect() as conn:
                 row = conn.execute(
-                    text(
-                        "SELECT id, email, login, hpassword FROM Users WHERE email = :email LIMIT 1"
-                    ),
+                    text("SELECT id, email, login, hpassword FROM Users WHERE email = :email LIMIT 1"),
                     {"email": email},
                 ).first()
         except Exception as e:
@@ -343,64 +371,16 @@ def create_app():
             log_event("login-failed", user=email, status="FAIL")
             return jsonify({"error": "invalid credentials"}), 401
 
-        token = _serializer().dumps(
-            {"uid": int(row.id), "login": row.login, "email": row.email}
-        )
+        token = _serializer().dumps({"uid": int(row.id), "login": row.login, "email": row.email})
         log_event("login-success", user=email, status="OK")
         # Include token expiry information to help clients manage refresh
         expires_in = app.config.get("TOKEN_TTL_SECONDS", 86400)
-        return (
-            jsonify(
-                {
-                    "token": token,
-                    "token_type": "bearer",
-                    "expires_in": int(expires_in),
-                }
-            ),
-            200,
-        )
+        return jsonify({"token": token, "token_type": "bearer", "expires_in": int(expires_in)}), 200
 
-    @app.route("/api/delete-document", methods=["DELETE"])
-    @require_auth
-    def delete_document():
-        doc_id = request.args.get("id")
-        if not doc_id or not doc_id.isdigit():
-            # Monitoring: invalid document id provided
-            app.logger.warning(
-                f"Delete document: invalid id provided by user={g.user['login']} from {request.remote_addr}: id={doc_id}"
-            )
-            log_event("delete-document-invalid-id", user=g.user["login"], status="FAIL")
-            return jsonify({"error": "invalid document id"}), 400
-
-        try:
-            with get_engine().begin() as conn:
-                conn.execute(
-                    text("DELETE FROM Documents WHERE id = :id AND ownerid = :uid"),
-                    {"id": int(doc_id), "uid": g.user["id"]},
-                )
-        except Exception as e:
-            # Monitoring: SQL/database error during delete
-            app.logger.error(
-                f"SQL error or possible injection attempt during delete by user={g.user['login']}: {e}"
-            )
-            log_event(
-                "delete-document-db-error",
-                user=g.user["login"],
-                status="ERROR",
-                details=str(e),
-            )
-            return jsonify({"error": f"database error: {str(e)}"}), 503
-
-        # Monitoring: successful sensitive action
-        log_event("delete-document", user=g.user["login"], status="OK", id=doc_id)
-        app.logger.info(f"User {g.user['login']} deleted document ID={doc_id}")
-        return jsonify({"deleted": True, "id": doc_id}), 200
-
-    # -------- Document endpoints (upload/list/get/version) --------
+    # POST /api/upload-document  (multipart form: file + name)
     @app.post("/api/upload-document")
     @require_auth
     def upload_document():
-        # Accept multipart form: file (pdf) and name
         if "file" not in request.files:
             return jsonify({"error": "file is required"}), 400
         file = request.files["file"]
@@ -421,8 +401,6 @@ def create_app():
             file.save(dest)
             validate_pdf_file(dest)
             size = dest.stat().st_size
-            import hashlib
-
             # Compute raw 32-byte digest for storage (BINARY(32) column)
             with dest.open("rb") as fh:
                 body = fh.read()
@@ -459,11 +437,9 @@ def create_app():
 
         log_event("upload-document", user=g.user["login"], status="OK", id=doc_id)
         # Return hex string to clients (more convenient than raw bytes)
-        return (
-            jsonify({"id": doc_id, "name": name, "sha256": sha_hex, "size": int(size)}),
-            201,
-        )
+        return jsonify({"id": doc_id, "name": name, "sha256": sha_hex, "size": int(size)}), 201
 
+    # GET /api/list-documents (authenticated)
     @app.get("/api/list-documents")
     @require_auth
     def list_documents():
@@ -492,6 +468,7 @@ def create_app():
             )
             return jsonify({"error": "database error"}), 503
 
+    # GET /api/get-document/<int:document_id>
     @app.get("/api/get-document/<int:document_id>")
     @require_auth
     def get_document(document_id: int):
@@ -526,8 +503,6 @@ def create_app():
             return jsonify({"error": "invalid file path"}), 400
 
         try:
-            from flask import send_file
-
             return send_file(
                 resolved,
                 mimetype="application/pdf",
@@ -538,6 +513,69 @@ def create_app():
             app.logger.error(f"Failed to send document {document_id}: {e}")
             return jsonify({"error": "could not send file"}), 500
 
+    # Helper: resolve path safely under STORAGE_DIR (handles absolute/relative)
+    def _safe_resolve_under_storage(p: str, storage_root: Path) -> Path:
+        storage_root = storage_root.resolve()
+        fp = Path(p)
+        if not fp.is_absolute():
+            fp = storage_root / fp
+        fp = fp.resolve()
+        # Python 3.12 has is_relative_to on Path
+        if hasattr(fp, "is_relative_to"):
+            if not fp.is_relative_to(storage_root):
+                raise RuntimeError(f"path {fp} escapes storage root {storage_root}")
+        else:
+            try:
+                fp.relative_to(storage_root)
+            except ValueError:
+                raise RuntimeError(f"path {fp} escapes storage root {storage_root}")
+        return fp
+
+    # DELETE /api/delete-document  (and variants)
+    @app.route("/api/delete-document", methods=["DELETE", "POST"])
+    @app.route("/api/delete-document/<document_id>", methods=["DELETE"])
+    @require_auth
+    def delete_document(document_id: int | None = None):
+        # accept id from path, query (?id= / ?documentid=), or JSON body on POST
+        if not document_id:
+            document_id = (
+                request.args.get("id")
+                or request.args.get("documentid")
+                or (request.is_json and (request.get_json(silent=True) or {}).get("id"))
+            )
+        if not document_id or not str(document_id).isdigit():
+            # Monitoring: invalid document id provided
+            app.logger.warning(
+                f"Delete document: invalid id provided by user={g.user['login']} from {request.remote_addr}: id={document_id}"
+            )
+            log_event("delete-document-invalid-id", user=g.user["login"], status="FAIL")
+            return jsonify({"error": "invalid document id"}), 400
+
+        try:
+            with get_engine().begin() as conn:
+                conn.execute(
+                    text("DELETE FROM Documents WHERE id = :id AND ownerid = :uid"),
+                    {"id": int(document_id), "uid": g.user["id"]},
+                )
+        except Exception as e:
+            # Monitoring: SQL/database error during delete
+            app.logger.error(
+                f"SQL error or possible injection attempt during delete by user={g.user['login']}: {e}"
+            )
+            log_event(
+                "delete-document-db-error",
+                user=g.user["login"],
+                status="ERROR",
+                details=str(e),
+            )
+            return jsonify({"error": f"database error: {str(e)}"}), 503
+
+        # Monitoring: successful sensitive action
+        log_event("delete-document", user=g.user["login"], status="OK", id=document_id)
+        app.logger.info(f"User {g.user['login']} deleted document ID={document_id}")
+        return jsonify({"deleted": True, "id": document_id}), 200
+
+    # GET /api/list-versions/<int:document_id>
     @app.get("/api/list-versions/<int:document_id>")
     @require_auth
     def list_versions(document_id: int):
@@ -564,6 +602,7 @@ def create_app():
             app.logger.error(f"DB error listing versions for doc={document_id}: {e}")
             return jsonify({"error": "database error"}), 503
 
+    # GET /api/get-version/<path:link>
     @app.get("/api/get-version/<path:link>")
     def get_version(link: str):
         # Public endpoint returning a watermarked version by token link
@@ -587,8 +626,6 @@ def create_app():
             return jsonify({"error": "invalid file path"}), 400
 
         try:
-            from flask import send_file
-
             return send_file(
                 resolved,
                 mimetype="application/pdf",
@@ -599,54 +636,464 @@ def create_app():
             app.logger.error(f"Failed to send version for link={link}: {e}")
             return jsonify({"error": "could not send file"}), 500
 
-    @app.get("/healthz")
-    def healthz():
+    # GET /api/list-all-versions
+    @app.get("/api/list-all-versions")
+    @require_auth
+    def list_all_versions():
         try:
             with get_engine().connect() as conn:
-                conn.execute(text("SELECT 1"))
-            db_ok = True
-        except Exception:
-            db_ok = False
-        return (
-            jsonify(
-                {"message": "The server is up and running.", "db_connected": db_ok}
-            ),
-            200,
-        )
-
-    @app.get("/metrics")
-    def metrics():
-        try:
-            data = _metrics_dump()
-            return (data, 200, {"Content-Type": "text/plain; version=0.0.4"})
+                rows = conn.execute(
+                    text("""
+                        SELECT v.id, v.documentid, v.link, v.intended_for, v.method 
+                        FROM Versions v
+                        JOIN Documents d ON v.documentid = d.id
+                        WHERE d.ownerid = :uid
+                        ORDER BY v.id DESC
+                    """),
+                    {"uid": g.user["id"]},
+                ).all()
+            versions = [
+                {
+                    "id": int(r.id),
+                    "documentid": int(r.documentid),
+                    "link": r.link,
+                    "intended_for": r.intended_for,
+                    "method": r.method,
+                }
+                for r in rows
+            ]
+            return jsonify({"versions": versions}), 200
         except Exception as e:
-            return (str(e), 500)
+            app.logger.error(f"DB error listing all versions for user={g.user['login']}: {e}")
+            return jsonify({"error": "database error"}), 503
 
+    # POST /api/create-watermark
+    @app.post("/api/create-watermark")
+    @app.post("/api/create-watermark/<int:document_id>")
+    @require_auth
+    def create_watermark(document_id: int | None = None):
+        if not document_id:
+            document_id = (
+                request.args.get("id")
+                or request.args.get("documentid")
+                or (request.is_json and (request.get_json(silent=True) or {}).get("id"))
+            )
+        try:
+            doc_id = int(document_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "document_id (int) is required"}), 400
+
+        payload = request.get_json(silent=True) or {}
+        method = payload.get("method")
+        position = payload.get("position") or None
+        key = payload.get("key")
+        secret = payload.get("secret")
+        intended_for = payload.get("intended_for") or ""
+
+        if not method or not isinstance(key, str) or not secret:
+            return jsonify({"error": "method, key, and secret are required"}), 400
+
+        # Lookup the document and enforce ownership
+        try:
+            with get_engine().connect() as conn:
+                row = conn.execute(
+                    text("SELECT id, name, path, ownerid FROM Documents WHERE id = :id LIMIT 1"),
+                    {"id": doc_id},
+                ).first()
+        except Exception as e:
+            return jsonify({"error": f"database error: {str(e)}"}), 503
+
+        if not row:
+            return jsonify({"error": "document not found"}), 404
+        if int(row.ownerid) != g.user["id"]:
+            return jsonify({"error": "forbidden"}), 403
+
+        storage_root = Path(app.config["STORAGE_DIR"])
+        try:
+            orig_path = _safe_resolve_under_storage(row.path, storage_root)
+        except Exception:
+            return jsonify({"error": "invalid file path"}), 400
+
+        # Check if watermarking is applicable
+        if not WMUtils.is_watermarking_applicable(method, str(orig_path), position):
+            return jsonify({"error": "watermarking not applicable for this document/method"}), 400
+
+        # Create watermark
+        link = str(uuid.uuid4())
+        wm_filename = f"{link}.pdf"
+        wm_dir = storage_root / "watermarks"
+        wm_dir.mkdir(parents=True, exist_ok=True)
+        wm_path = wm_dir / wm_filename
+
+        try:
+            wm_bytes = WMUtils.apply_watermark(
+                pdf=str(orig_path),
+                secret=secret,
+                key=key,
+                method=method,
+                position=position
+            )
+            with wm_path.open("wb") as f:
+                f.write(wm_bytes)
+            wm_size = wm_path.stat().st_size
+        except Exception as e:
+            return jsonify({"error": f"Error when attempting to create watermark: {e}"}), 400
+
+        # Save to database
+        try:
+            with get_engine().begin() as conn:
+                res = conn.execute(
+                    text("""
+                        INSERT INTO Versions 
+                        (documentid, link, intended_for, secret, method, position, path)
+                        VALUES (:documentid, :link, :intended_for, :secret, :method, :position, :path)
+                    """),
+                    {
+                        "documentid": doc_id,
+                        "link": link,
+                        "intended_for": intended_for,
+                        "secret": secret,
+                        "method": method,
+                        "position": position or "",
+                        "path": str(wm_path)
+                    }
+                )
+                version_id = int(res.lastrowid)
+        except Exception as e:
+            return jsonify({"error": f"database error: {str(e)}"}), 503
+
+        return jsonify({
+            "id": version_id,
+            "documentid": doc_id,
+            "link": link,
+            "intended_for": intended_for,
+            "method": method,
+            "position": position or "",
+            "filename": wm_filename,
+            "size": int(wm_size)
+        }), 201
+
+    # GET /api/get-watermarking-methods
     @app.get("/api/get-watermarking-methods")
     def get_watermarking_methods():
-        """Return a list of available watermarking method identifiers.
+        methods = []
+        for m in WMUtils.METHODS:
+            methods.append({"name": m, "description": WMUtils.get_method(m).get_usage()})
+        return jsonify({"methods": methods, "count": len(methods)}), 200
 
-        This is a minimal implementation returning the well-known
-        methods provided in the repository. For a dynamic system this
-        could introspect modules that subclass WatermarkingMethod.
-        """
-        methods = [
-            "add-after-eof",
-            "whitespace-steganography",
-            "base64-invisible-comment",
-            "pdf-object-stream-embedder",
-        ]
-        return jsonify({"count": len(methods), "methods": methods}), 200
+    # POST /api/read-watermark
+    @app.post("/api/read-watermark")
+    @app.post("/api/read-watermark/<int:document_id>")
+    @require_auth
+    def read_watermark(document_id: int | None = None):
+        if not document_id:
+            document_id = (
+                request.args.get("id")
+                or request.args.get("documentid")
+                or (request.is_json and (request.get_json(silent=True) or {}).get("id"))
+            )
+        try:
+            doc_id = int(document_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "document_id (int) is required"}), 400
 
-    # Serve the bundled static UI at the root for convenience
-    @app.get("/")
-    def root_index():
-        # redirect to the static index page shipped in the repository
-        return redirect("/static/index.html")
+        payload = request.get_json(silent=True) or {}
+        method = payload.get("method")
+        position = payload.get("position") or None
+        key = payload.get("key")
+
+        if not method or not isinstance(key, str):
+            return jsonify({"error": "method and key are required"}), 400
+
+        # Lookup the document and enforce ownership
+        try:
+            with get_engine().connect() as conn:
+                row = conn.execute(
+                    text("SELECT id, name, path, ownerid FROM Documents WHERE id = :id LIMIT 1"),
+                    {"id": doc_id},
+                ).first()
+        except Exception as e:
+            return jsonify({"error": f"database error: {str(e)}"}), 503
+
+        if not row:
+            return jsonify({"error": "document not found"}), 404
+        if int(row.ownerid) != g.user["id"]:
+            return jsonify({"error": "forbidden"}), 403
+
+        storage_root = Path(app.config["STORAGE_DIR"])
+        try:
+            orig_path = _safe_resolve_under_storage(row.path, storage_root)
+        except Exception:
+            return jsonify({"error": "invalid file path"}), 400
+
+        # Read watermark
+        try:
+            secret = WMUtils.read_watermark(
+                pdf=str(orig_path),
+                key=key,
+                method=method,
+                position=position
+            )
+        except Exception as e:
+            return jsonify({"error": f"Error when attempting to read watermark: {e}"}), 400
+
+        return jsonify({
+            "documentid": doc_id,
+            "secret": secret,
+            "method": method,
+            "position": position
+        }), 200
+
+    # ====================== RMAP: setup + endpoints ======================
+
+    # Configuration
+    app.config.setdefault("RMAP_BASE_PDF", os.environ.get("RMAP_BASE_PDF", "/app/group_17_rmap.pdf"))
+    app.config.setdefault("RMAP_LINK_TTL", int(os.environ.get("RMAP_LINK_TTL", "600")))
+    app.config.setdefault("RMAP_TOKENS", {})
+
+    # Key paths
+    SERVER_DIR = Path(__file__).resolve().parents[1]
+    DEFAULT_KEYS_DIR = SERVER_DIR / "keys"
+    rmap_keys_dir = Path(os.environ.get("RMAP_KEYS_DIR", str(DEFAULT_KEYS_DIR))).resolve()
+    clients_dir = rmap_keys_dir / "clients"
+    server_pub = rmap_keys_dir / "server_public.asc"
+    server_priv = rmap_keys_dir / "server_private.asc"
+
+    # Initialize RMAP
+    missing = [p for p in (clients_dir, server_pub, server_priv) if not p.exists()]
+    if missing:
+        app.logger.error("RMAP key path(s) missing: %s", ", ".join(map(str, missing)))
+        app.config["RMAP"] = None
+    else:
+        try:
+            im = IdentityManager(
+                client_keys_dir=clients_dir,
+                server_public_key_path=server_pub,
+                server_private_key_path=server_priv,
+            )
+            app.config["RMAP"] = RMAP(im)
+            app.logger.info("RMAP initialized (clients dir: %s)", clients_dir)
+        except Exception as e:
+            app.logger.exception("Failed to initialize RMAP: %s", e)
+            app.config["RMAP"] = None
+
+    # Initialize RMAP Base PDF in Database on Startup
+    def init_rmap_base_pdf():
+        """Ensure RMAP base PDF exists in the database."""
+        base_pdf = Path(app.config["RMAP_BASE_PDF"])
+        if not base_pdf.exists():
+            app.logger.warning(f"RMAP base PDF not found: {base_pdf}")
+            return
+
+        try:
+            with get_engine().begin() as conn:
+                # Check if already exists
+                existing = conn.execute(
+                    text("SELECT id FROM Documents WHERE name = :name"),
+                    {"name": "RMAP Base Document"}
+                ).first()
+                
+                if existing:
+                    app.logger.info("RMAP base document already exists in database")
+                    return
+
+                # Create system user if needed
+                system_user = conn.execute(
+                    text("SELECT id FROM Users WHERE email = :email"),
+                    {"email": "system@tatou.internal"}
+                ).first()
+
+                if not system_user:
+                    hpw = generate_password_hash("system-internal")
+                    res = conn.execute(
+                        text("INSERT INTO Users (email, hpassword, login) VALUES (:email, :hpw, :login)"),
+                        {"email": "system@tatou.internal", "hpw": hpw, "login": "system"}
+                    )
+                    system_uid = int(res.lastrowid)
+                else:
+                    system_uid = int(system_user.id)
+
+                # Register RMAP base PDF
+                with base_pdf.open("rb") as f:
+                    body = f.read()
+                    sha_raw = hashlib.sha256(body).digest()
+                    size = len(body)
+
+                conn.execute(
+                    text("""
+                        INSERT INTO Documents (name, path, ownerid, sha256, size)
+                        VALUES (:name, :path, :uid, :sha, :size)
+                    """),
+                    {
+                        "name": "RMAP Base Document",
+                        "path": str(base_pdf),
+                        "uid": system_uid,
+                        "sha": sha_raw,
+                        "size": size
+                    }
+                )
+                app.logger.info("RMAP base PDF registered in database")
+
+        except Exception as e:
+            app.logger.error(f"Failed to initialize RMAP base PDF: {e}")
+
+    def _create_watermarked_pdf(identity: str, result_hex: str) -> Path:
+        """Create a watermarked PDF for RMAP."""
+        base_pdf = Path(app.config["RMAP_BASE_PDF"])
+        if not base_pdf.exists():
+            raise FileNotFoundError(f"Base PDF not found: {base_pdf}")
+
+        wm_dir = app.config["STORAGE_DIR"] / "watermarks" / "rmap"
+        wm_dir.mkdir(parents=True, exist_ok=True)
+        wm_path = wm_dir / f"rmap_{result_hex}.pdf"
+
+        if wm_path.exists():
+            app.logger.info(f"Reusing existing watermark for {identity}")
+            return wm_path
+
+        secret = f"RMAP:{identity}:{result_hex}:{int(time.time())}"
+        key = app.config["SECRET_KEY"]
+        method = "whitespace-stego"
+
+        app.logger.info(f"Creating watermark for {identity} with method {method}")
+
+        try:
+            wm_bytes = WMUtils.apply_watermark(
+                pdf=str(base_pdf),
+                secret=secret,
+                key=key,
+                method=method,
+                position=None
+            )
+
+            with wm_path.open("wb") as f:
+                f.write(wm_bytes)
+
+            app.logger.info(f"Watermark created: {wm_path} ({len(wm_bytes)} bytes)")
+            return wm_path
+
+        except Exception as e:
+            app.logger.error(f"Watermarking failed for {identity}: {e}")
+            raise
+
+    def _rmap_make_link(result_hex: str, identity: str) -> dict:
+        """Create watermarked PDF and Version record."""
+        token = result_hex.lower()
+
+        try:
+            # Create watermarked PDF
+            pdf_path = _create_watermarked_pdf(identity, result_hex)
+
+            # Store in database
+            with get_engine().begin() as conn:
+                # Find RMAP base document
+                doc_row = conn.execute(
+                    text("SELECT id FROM Documents WHERE name = :name"),
+                    {"name": "RMAP Base Document"}
+                ).first()
+
+                if not doc_row:
+                    raise RuntimeError("RMAP base document not found in database")
+
+                # Create Version record
+                conn.execute(
+                    text("""
+                        INSERT INTO Versions 
+                        (documentid, link, intended_for, secret, method, position, path)
+                        VALUES (:documentid, :link, :intended_for, :secret, :method, :position, :path)
+                    """),
+                    {
+                        "documentid": doc_row.id,
+                        "link": token,
+                        "intended_for": identity,
+                        "secret": f"RMAP:{identity}:{token}:{int(time.time())}",
+                        "method": "whitespace-stego",
+                        "position": "",
+                        "path": str(pdf_path)
+                    }
+                )
+
+                app.logger.info(f"Created Version record with link={token} for {identity}")
+
+            return {"token": token}
+
+        except Exception as e:
+            app.logger.error(f"Failed to create watermark: {e}")
+            raise
+
+    # Message 1 -> Response 1
+    @app.post("/api/rmap-initiate")
+    def rmap_initiate():
+        """Handle RMAP Message 1"""
+        rmap = app.config.get("RMAP")
+        if rmap is None:
+            return jsonify({"error": "RMAP not initialized"}), 503
+
+        body = request.get_json(silent=True) or {}
+        if "payload" not in body:
+            return jsonify({"error": "payload is required"}), 400
+
+        try:
+            out = rmap.handle_message1(body)
+
+            if "payload" in out:
+                app.logger.info("RMAP initiate: success")
+                return jsonify(out), 200
+            else:
+                app.logger.warning(f"RMAP initiate: {out.get('error', 'unknown error')}")
+                return jsonify(out), 400
+
+        except Exception as e:
+            app.logger.exception("rmap-initiate failed: %s", e)
+            return jsonify({"error": "server error"}), 500
+
+    @app.post("/api/rmap-get-link")
+    def rmap_get_link():
+        """Handle RMAP Message 2 and create watermarked PDF"""
+        rmap = app.config.get("RMAP")
+        if rmap is None:
+            return jsonify({"error": "RMAP not initialized"}), 503
+
+        body = request.get_json(silent=True) or {}
+        if "payload" not in body:
+            return jsonify({"error": "payload is required"}), 400
+
+        try:
+            out = rmap.handle_message2(body)
+
+            if "result" not in out:
+                app.logger.warning(f"RMAP get-link: {out.get('error', 'unknown error')}")
+                return jsonify(out), 400
+
+            result_hex = out["result"]
+
+            # Get identity from RMAP's internal nonces dictionary
+            identity = "Unknown"
+            if hasattr(rmap, 'nonces') and rmap.nonces:
+                identity = list(rmap.nonces.keys())[0]
+                rmap.nonces.clear()
+
+            app.logger.info(f"RMAP get-link: creating link for {identity} with result {result_hex}")
+
+            _rmap_make_link(result_hex, identity)
+
+            return jsonify({"result": result_hex}), 200
+
+        except Exception as e:
+            app.logger.exception("rmap-get-link failed: %s", e)
+            return jsonify({"error": "server error"}), 500
+
+    # ====================== end RMAP section ======================
+
+    with app.app_context():
+        try:
+            init_rmap_base_pdf()
+        except Exception as e:
+            app.logger.error(f"Failed to initialize RMAP base PDF: {e}")
 
     return app
 
-
+# WSGI entrypoint
 app = create_app()
 
 if __name__ == "__main__":

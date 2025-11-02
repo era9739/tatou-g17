@@ -94,7 +94,7 @@ python -m pytest
 python -m pytest -v
 
 # Run specific test file
-python -m pytest test/test_api_endpoints.py
+python -m pytest test/test_server_endpoints.py
 ```
 
 ### API Tests
@@ -103,10 +103,10 @@ API tests are included in the unit test suite and test all Flask endpoints:
 
 ```bash
 # Run API-specific tests
-python -m pytest test/test_api_endpoints.py -v
+python -m pytest test/test_server_endpoints.py -v
 
 # Test with detailed output
-python -m pytest test/test_api_endpoints.py -vv
+python -m pytest test/test_server_endpoints.py -vv
 ```
 
 ### Coverage Analysis

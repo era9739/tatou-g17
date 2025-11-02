@@ -11,6 +11,23 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    # Add MariaDB service container (matching your docker-compose)
+    services:
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_ROOT_PASSWORD: rootpassword
+          MARIADB_DATABASE: tatou
+          MARIADB_USER: tatou_user
+          MARIADB_PASSWORD: tatou_password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mariadb-admin ping -h 127.0.0.1 -u root --password=rootpassword --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -28,11 +45,46 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
+      # Wait for MariaDB to be ready
+      - name: Wait for MariaDB
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mariadb-client
+          for i in {1..30}; do
+            if mariadb-admin ping -h"127.0.0.1" -P"3306" -u"root" -p"rootpassword" --silent; then
+              echo "MariaDB is ready!"
+              break
+            fi
+            echo "Waiting for MariaDB... ($i/30)"
+            sleep 2
+          done
+
+      # Initialize database with your schema
+      - name: Initialize database
+        run: |
+          mariadb -h 127.0.0.1 -P 3306 -u root -prootpassword tatou < db/tatou.sql
+          echo "Database initialized successfully"
+
       - name: Run tests with coverage
         working-directory: server
+        env:
+          # Set database connection for tests (use 127.0.0.1 instead of 'db')
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_NAME: tatou
+          DB_USER: tatou_user
+          DB_PASSWORD: tatou_password
+          TESTING: "true"
+          # Optional: mock RMAP if not needed for tests
+          RMAP_BASE_PDF: /tmp/mock_rmap.pdf
+          RMAP_KEYS_DIR: /tmp/keys
         run: |
           . .venv/bin/activate
-          python3.12 -m pytest \
+          # Create mock files if needed
+          mkdir -p /tmp/keys
+          touch /tmp/mock_rmap.pdf
+          
+          python -m pytest \
             --verbose \
             --junit-xml=test-results/junit.xml \
             --html=test-results/report.html \

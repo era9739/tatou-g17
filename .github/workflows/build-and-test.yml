@@ -32,7 +32,7 @@ jobs:
         working-directory: server
         run: |
           . .venv/bin/activate
-          python -m pytest \
+          python3.12 -m pytest \
             --verbose \
             --junit-xml=test-results/junit.xml \
             --html=test-results/report.html \

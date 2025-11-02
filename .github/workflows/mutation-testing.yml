@@ -10,27 +10,271 @@ on:
 jobs:
   mutation-test:
     runs-on: ubuntu-latest
+
+    env:
+      MARIADB_ROOT_PASSWORD: ${{ secrets.MARIADB_ROOT_PASSWORD }}
+      MARIADB_USER: ${{ secrets.MARIADB_USER }}
+      MARIADB_PASSWORD: ${{ secrets.MARIADB_PASSWORD }}
+      FLAG_2: ${{ secrets.FLAG_2 }}
+
+    # MariaDB service - same as build-and-test.yml
+    services:
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_ROOT_PASSWORD: rootpassword
+          MARIADB_DATABASE: tatou
+          MARIADB_USER: tatou_user
+          MARIADB_PASSWORD: tatou_password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mariadb-admin ping -h 127.0.0.1 -u root --password=rootpassword --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.12.x"
 
       - name: Install dependencies
         working-directory: server
         run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
           pip install mutmut
 
+      # Wait for MariaDB to be ready (same as build-and-test.yml)
+      - name: Wait for MariaDB
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mariadb-client
+          for i in {1..30}; do
+            if mariadb-admin ping -h"127.0.0.1" -P"3306" -u"root" -p"rootpassword" --silent; then
+              echo "MariaDB is ready!"
+              break
+            fi
+            echo "Waiting for MariaDB... ($i/30)"
+            sleep 2
+          done
+
+      # Initialize database with schema (same as build-and-test.yml)
+      - name: Initialize database
+        run: |
+          mariadb -h 127.0.0.1 -P 3306 -u root -p"rootpassword" tatou < db/tatou.sql
+          echo "Database initialized successfully"
+
+      # Create mock RMAP files (critical for tests)
+      - name: Setup RMAP mock files
+        run: |
+          # Create temporary directories
+          mkdir -p /tmp/keys/clients
+          
+          # Create mock server keys
+          cat > /tmp/keys/server_public.asc << 'EOF'
+          -----BEGIN PGP PUBLIC KEY BLOCK-----
+          mock_server_public_key_for_testing
+          -----END PGP PUBLIC KEY BLOCK-----
+          EOF
+          
+          cat > /tmp/keys/server_private.asc << 'EOF'
+          -----BEGIN PGP PRIVATE KEY BLOCK-----
+          mock_server_private_key_for_testing
+          -----END PGP PRIVATE KEY BLOCK-----
+          EOF
+          
+          # Create mock client key
+          cat > /tmp/keys/clients/test_client.asc << 'EOF'
+          -----BEGIN PGP PUBLIC KEY BLOCK-----
+          mock_client_public_key_for_testing
+          -----END PGP PUBLIC KEY BLOCK-----
+          EOF
+          
+          # Create minimal valid PDF for RMAP base
+          cat > /tmp/mock_rmap.pdf << 'EOF'
+          %PDF-1.4
+          1 0 obj
+          << /Type /Catalog /Pages 2 0 R >>
+          endobj
+          2 0 obj
+          << /Type /Pages /Kids [3 0 R] /Count 1 >>
+          endobj
+          3 0 obj
+          << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>
+          endobj
+          xref
+          0 4
+          0000000000 65535 f 
+          0000000009 00000 n 
+          0000000058 00000 n 
+          0000000115 00000 n 
+          trailer
+          << /Size 4 /Root 1 0 R >>
+          startxref
+          187
+          %%EOF
+          EOF
+          
+          echo "✅ Mock RMAP files created:"
+          ls -la /tmp/keys/
+          ls -la /tmp/keys/clients/
+          ls -la /tmp/mock_rmap.pdf
+
+      # Run mutation testing with proper environment (matching build-and-test.yml)
       - name: Run mutation testing
         working-directory: server
+        env:
+          # Database configuration (use 127.0.0.1 instead of 'db')
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_NAME: tatou
+          DB_USER: tatou_user
+          DB_PASSWORD: tatou_password
+          # Testing flags
+          TESTING: "true"
+          SECRET_KEY: test-secret-key-mutation
+          FLAG_2: ${{ secrets.FLAG_2 }}
+          # RMAP configuration (mock files)
+          RMAP_BASE_PDF: /tmp/mock_rmap.pdf
+          RMAP_KEYS_DIR: /tmp/keys
+          RMAP_LINK_TTL: 600
         run: |
+          . .venv/bin/activate
+          
+          # Run mutation tests (continue on failure to get results)
+          echo "🧬 Running mutation tests..."
           mutmut run || true
-          mutmut results > mutation-results.txt
+          
+          # Generate results
+          echo ""
+          echo "📊 Mutation Testing Results:"
+          mutmut results | tee mutation-results.txt
+          
+          # Generate HTML report
+          echo ""
+          echo "📄 Generating HTML report..."
+          mutmut html || echo "⚠️  Could not generate HTML report"
 
-      - name: Upload results
+      # Calculate mutation score and check if it meets threshold
+      - name: Check mutation score threshold
+        working-directory: server
+        run: |
+          . .venv/bin/activate
+          
+          # Extract mutation score from results
+          RESULTS=$(mutmut results 2>&1)
+          
+          echo "Full results:"
+          echo "$RESULTS"
+          echo ""
+          
+          # Try to extract score (format: "X / Y = Z%")
+          if echo "$RESULTS" | grep -q "Mutation score"; then
+            SCORE=$(echo "$RESULTS" | grep "Mutation score" | grep -oP '\d+\.\d+(?=%)')
+            echo "Detected mutation score: $SCORE%"
+            
+            # Check if score meets threshold (50%)
+            if (( $(echo "$SCORE >= 50.0" | bc -l) )); then
+              echo "✅ Mutation score $SCORE% meets threshold (≥50%)"
+              exit 0
+            else
+              echo "❌ Mutation score $SCORE% below threshold (50%)"
+              echo "::warning::Mutation score is below 50% threshold"
+              # Don't fail the build, just warn
+              exit 0
+            fi
+          else
+            echo "⚠️  Could not parse mutation score from results"
+            exit 0
+          fi
+
+      # Upload mutation testing results
+      - name: Upload mutation results
         uses: actions/upload-artifact@v4
+        if: always()  # Upload even if tests fail
         with:
           name: mutation-results
-          path: server/mutation-results.txt
+          path: |
+            server/mutation-results.txt
+            server/.mutmut-cache
+            server/html/
+          retention-days: 30
+
+      # Add comment to PR with mutation score (only on PRs)
+      - name: Comment mutation score on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            try {
+              const results = fs.readFileSync('server/mutation-results.txt', 'utf8');
+              
+              // Extract key metrics
+              const scoreMatch = results.match(/Mutation score.*?(\d+\.\d+)%/);
+              const killedMatch = results.match(/🎉\s*(\d+)/);
+              const survivedMatch = results.match(/🫥\s*(\d+)/);
+              
+              const score = scoreMatch ? scoreMatch[1] : 'N/A';
+              const killed = killedMatch ? killedMatch[1] : 'N/A';
+              const survived = survivedMatch ? survivedMatch[1] : 'N/A';
+              
+              const statusEmoji = parseFloat(score) >= 50 ? '✅' : '⚠️';
+              
+              const comment = `## ${statusEmoji} Mutation Testing Results
+              
+              **Mutation Score:** ${score}% ${parseFloat(score) >= 50 ? '(Target: ≥50%)' : '⚠️ Below 50% threshold'}
+              
+              | Metric | Count |
+              |--------|-------|
+              | 🎉 Killed | ${killed} |
+              | 🫥 Survived | ${survived} |
+              
+              <details>
+              <summary>📊 Full Results</summary>
+              
+              \`\`\`
+              ${results}
+              \`\`\`
+              </details>
+              
+              ---
+              *View detailed HTML report in workflow artifacts*
+              `;
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            } catch (error) {
+              console.log('Could not create PR comment:', error.message);
+            }
+
+      # Summary
+      - name: Generate summary
+        if: always()
+        run: |
+          echo "## 🧬 Mutation Testing Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "server/mutation-results.txt" ]; then
+            echo "### Results" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            cat server/mutation-results.txt >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ No results file found" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📥 Download HTML report from workflow artifacts" >> $GITHUB_STEP_SUMMARY
